@@ -6,7 +6,7 @@
 # point in the build. This file documents the full intended pinned set and lets a
 # plain `pip install -r requirements.txt` reproduce the runtime environment.
 
-httpx>=0.27,<1.0
+httpx[http2]>=0.27,<1.0   # http2 extra (h2) required by the LLD §3.2 http2=True client
 selectolax>=0.3,<0.4
 sentence-transformers>=3.0,<4.0   # pulls torch (CPU), transformers — the one heavyweight
 numpy>=1.26,<3.0

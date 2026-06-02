@@ -11,6 +11,7 @@ authors = [{ name = "Peter Mark" }]
 # as the task that first imports it lands. T01 only needs the CLI framework so the
 # `jobfinder` entry point imports and `--help` works.
 dependencies = [
+    "httpx[http2]>=0.27,<1.0",
     "pydantic>=2.6,<3.0",
     "pydantic-settings>=2.2,<3.0",
     "pyyaml>=6.0,<7.0",

@@ -9,7 +9,7 @@ human-readable rollup.
 | Milestone | Scope | Status |
 |-----------|-------|--------|
 | M1 — Skeleton + DB | scaffold, settings, models, SQLite store | done |
-| M2 — Sources + normalizer | http client, Greenhouse/Lever, normalize | not started |
+| M2 — Sources + normalizer | http client, Greenhouse/Lever, normalize | in progress |
 | M3 — Resume + filters + scoring | extraction, embeddings, scoring math | not started |
 | M4 — Dashboard | FastAPI API + static SPA | not started |
 | M5 — Ashby + Adzuna + discovery | extra sources, board-token harvest | not started |
@@ -25,6 +25,7 @@ human-readable rollup.
 | T04 — SQLite schema & connection | done | `connect()` applies LLD §7.1 PRAGMAs (WAL, synchronous=NORMAL, busy_timeout=5000, foreign_keys=ON) + `sqlite3.Row` + auto parent-dir; `init_db()` runs the full §7.2 DDL via `executescript` (all `IF NOT EXISTS` → idempotent). 5 tests (PRAGMAs on file db, parent-dir, all tables/indexes, idempotent re-run, UNIQUE dup rejected). No new deps. |
 | T05 — Job upsert & dedupe | done | `upsert_job` = `INSERT ... ON CONFLICT(source, source_id) DO UPDATE` (LLD §7.3): idempotent re-poll preserves `first_seen_at` (omitted from SET), bumps `last_seen_at`, refreshes mutable fields incl. `embedding`/`eligible`/`ineligible_reason`/`content_hash`. `_job_params` coerces bool→int, StrEnum→value, datetime→ISO, `raw`→JSON. Added `eligible`/`ineligible_reason`/`content_hash` to `Job` (DDL §7.2 + pipeline §8 require them; LLD §2 listing abbreviates them out). 2 new tests (insert+coercion, dedupe idempotency). M1 store layer continues in T06. |
 | T06 — Scores/status/runs/companies/prune DAL | done | Remaining LLD §7.3 ops: `save_score` & `set_status` upsert on their PK (re-score/re-status replace, never duplicate); `start_run`/`finish_run` open then close a `poll_runs` row (`started_at`, then `finished_at`+`per_source_json` funnel); `add_company` = `ON CONFLICT(ats,token) DO NOTHING` (discovery dedup, never downgrades a verified entry) + `get_companies` reader; `prune(not_seen_days)` deletes by lexicographic ISO `last_seen_at < cutoff`, returns rowcount, cascades scores/status via FK. `now` injectable on all clock-using ops for deterministic tests. 6 new tests (score upsert, cascade delete, status upsert, run bookkeeping, company dedup/preserve, prune+cascade). **M1 store layer complete.** No new deps (stdlib). |
+| T07 — Shared HTTP client (throttle, retry, cache) | done | `HttpClient` over one `httpx.Client` (LLD §3.2): timeouts 10s/connect 5s, http2=True, descriptive UA. Per-host monotonic throttle (≥`throttle_s`); ≤3-attempt retry on `{429,500,502,503,504}`+connect/read timeouts (`0.5*2**n`+jitter, honors integer `Retry-After` on 429); on-disk JSON cache key=`sha1(full-url)` under `data/http_cache/`, wall-clock TTL, hit skips network+throttle, `no_cache` bypass. All time/IO seams injectable → 14 offline deterministic tests. Module-level `get_json`/`get_text` delegate to a lazy `Settings`-built default client (`configure/reset_default_client` for CLI/test). Dep: `httpx[http2]` (h2 needed by http2=True; already in LLD §14 target). **M2 started.** |
 
 ## TODO verify (real-world unknowns to confirm)
 
