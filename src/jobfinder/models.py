@@ -90,6 +90,14 @@ class Job:
     date_unknown: bool
     first_seen_at: datetime
     last_seen_at: datetime
+    # Eligibility is decided by filters.is_eligible and assigned by the pipeline
+    # before upsert (LLD §8); ineligible jobs are stored flagged, not dropped
+    # (LLD §5). content_hash gates re-embedding/re-scoring (LLD §6.4 / §7.2).
+    # The LLD §2 listing abbreviates these out, but the §7.2 DDL and §8 pipeline
+    # require them on the persisted record.
+    eligible: bool = True
+    ineligible_reason: str | None = None
+    content_hash: str | None = None
     embedding: bytes | None = None  # float32 little-endian blob
     raw: dict = field(default_factory=dict)
 
