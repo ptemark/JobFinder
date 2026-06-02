@@ -22,6 +22,7 @@ linked posting (the tool does NOT auto-submit applications).
   1. Full remote (Canada-eligible)
   2. Vancouver, BC
   3. Toronto, ON
+  4. Other, Canada or US visa-eligible
 - **Country:** Canada
 - **Seniority filter:** include "mid", "intermediate", "senior", "staff"-adjacent;
   exclude "intern", "junior"/"new grad", "principal/director/manager" unless IC.
