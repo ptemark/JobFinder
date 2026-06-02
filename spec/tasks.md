@@ -23,7 +23,7 @@ Legend: **[P0]** must-have for a working product · **[P1]** completeness · **[
 
 ## Phase 0 — Project skeleton
 
-### T01 — Repo scaffold & packaging  **[P0]**
+### T01 — Repo scaffold & packaging  **[P0]**  `[x] Complete`
 - **Depends on:** none
 - **Files:** `pyproject.toml`, `requirements.txt`, `.gitignore`, `README.md` (stub),
   `src/jobfinder/__init__.py`, `tests/__init__.py`, `PROGRESS.md`
@@ -323,6 +323,12 @@ Legend: **[P0]** must-have for a working product · **[P1]** completeness · **[
   `PROGRESS.md` shows every task complete. **Project is ready for use.**
 
 ---
+
+## Completed Tasks Log
+
+| # | Date | Task | Files | Notes |
+|---|------|------|-------|-------|
+| 1 | 2026-06-02 | T01 Repo scaffold & packaging | pyproject.toml, requirements.txt, .python-version, .gitignore, PROGRESS.md, src/jobfinder/{__init__,cli}.py, tests/{__init__,test_cli}.py | uv project (Python pinned 3.12 for later torch CPU wheels); `jobfinder = jobfinder.cli:app` entry point wired to no-op Typer app w/ root callback (empty group needs it for `--help`); deps added per-task per RALPH.md, full pinned target in requirements.txt (LLD §14); removed leftover IntelliJ `src/Main.java` stub; CI green (ruff format/check clean, 3 smoke tests pass, `--help` exits 0). |
 
 ## Dependency summary (critical path)
 T01→T02/T03 → T04→T05→T06 (store) ; T07→T08 + T09→T10 (fetch/normalize) ;
