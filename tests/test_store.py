@@ -1,16 +1,36 @@
-"""Tests for the SQLite schema & connection layer (T04, LLD §7.1–§7.2) and the
-job upsert/dedupe DAL (T05, LLD §7.3)."""
+"""Tests for the SQLite schema & connection layer (T04, LLD §7.1–§7.2), the
+job upsert/dedupe DAL (T05, LLD §7.3) and the scores/status/runs/companies/prune
+DAL (T06, LLD §7.3)."""
 
 from __future__ import annotations
 
+import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from jobfinder.models import Job, LocationBucket, Seniority, make_job_id
-from jobfinder.store import connect, init_db, upsert_job
+from jobfinder.models import (
+    Job,
+    LocationBucket,
+    ScoreBreakdown,
+    Seniority,
+    Status,
+    make_job_id,
+)
+from jobfinder.store import (
+    add_company,
+    connect,
+    finish_run,
+    get_companies,
+    init_db,
+    prune,
+    save_score,
+    set_status,
+    start_run,
+    upsert_job,
+)
 
 # Tables and indexes the DDL must create (LLD §7.2).
 EXPECTED_TABLES = {"jobs", "scores", "status", "poll_runs", "companies"}
@@ -179,5 +199,178 @@ def test_jobs_unique_source_constraint() -> None:
                 "first_seen_at, last_seen_at) VALUES "
                 "('id2', 'lever', '42', 'Eng dup', 't0', 't0')"
             )
+    finally:
+        conn.close()
+
+
+# --- T06: scores / status / runs / companies / prune ------------------------
+
+
+def test_save_score_persists_breakdown_and_upserts() -> None:
+    """save_score writes every component and re-scoring updates the one row."""
+    now = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+    conn = connect(":memory:")
+    try:
+        init_db(conn)
+        job = _make_job(first_seen=now, last_seen=now)
+        upsert_job(conn, job)
+
+        save_score(
+            conn,
+            job.id,
+            ScoreBreakdown(
+                final=87.5, semantic=0.8, skill=1.0, location=1.0, recency=0.9, scored_at=now
+            ),
+        )
+        row = conn.execute("SELECT * FROM scores WHERE job_id = ?", (job.id,)).fetchone()
+        assert row["final"] == 87.5
+        assert row["skill"] == 1.0
+        assert row["scored_at"] == now.isoformat()
+
+        # Re-score: still one row, values replaced.
+        save_score(
+            conn,
+            job.id,
+            ScoreBreakdown(
+                final=10.0, semantic=0.1, skill=0.0, location=0.0, recency=0.2, scored_at=now
+            ),
+        )
+        rows = conn.execute("SELECT * FROM scores WHERE job_id = ?", (job.id,)).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["final"] == 10.0
+    finally:
+        conn.close()
+
+
+def test_deleting_job_cascades_to_score_and_status() -> None:
+    """Deleting a job removes its score and status rows (FK ON DELETE CASCADE)."""
+    now = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+    conn = connect(":memory:")
+    try:
+        init_db(conn)
+        job = _make_job(first_seen=now, last_seen=now)
+        upsert_job(conn, job)
+        save_score(
+            conn,
+            job.id,
+            ScoreBreakdown(
+                final=50.0, semantic=0.5, skill=0.5, location=0.5, recency=0.5, scored_at=now
+            ),
+        )
+        set_status(conn, job.id, Status.INTERESTED, now=now)
+
+        conn.execute("DELETE FROM jobs WHERE id = ?", (job.id,))
+        conn.commit()
+
+        assert conn.execute("SELECT COUNT(*) FROM scores").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM status").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_set_status_upserts_state() -> None:
+    """set_status inserts then updates the single status row per job."""
+    t0 = datetime(2026, 6, 1, 9, 0, tzinfo=UTC)
+    t1 = datetime(2026, 6, 2, 9, 0, tzinfo=UTC)
+    conn = connect(":memory:")
+    try:
+        init_db(conn)
+        job = _make_job(first_seen=t0, last_seen=t0)
+        upsert_job(conn, job)
+
+        set_status(conn, job.id, Status.INTERESTED, now=t0)
+        set_status(conn, job.id, Status.DISMISSED, now=t1)
+
+        rows = conn.execute("SELECT * FROM status WHERE job_id = ?", (job.id,)).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["state"] == "dismissed"
+        assert rows[0]["updated_at"] == t1.isoformat()
+    finally:
+        conn.close()
+
+
+def test_run_bookkeeping_records_started_finished_and_per_source() -> None:
+    """start_run/finish_run record timestamps and the per-source JSON funnel."""
+    started = datetime(2026, 6, 2, 8, 0, tzinfo=UTC)
+    finished = datetime(2026, 6, 2, 8, 5, tzinfo=UTC)
+    per_source = {"greenhouse": {"fetched": 10, "kept": 3, "errors": []}}
+    conn = connect(":memory:")
+    try:
+        init_db(conn)
+        run_id = start_run(conn, now=started)
+        assert isinstance(run_id, int)
+
+        row = conn.execute("SELECT * FROM poll_runs WHERE id = ?", (run_id,)).fetchone()
+        assert row["started_at"] == started.isoformat()
+        assert row["finished_at"] is None  # still open
+
+        finish_run(conn, run_id, per_source, now=finished)
+        row = conn.execute("SELECT * FROM poll_runs WHERE id = ?", (run_id,)).fetchone()
+        assert row["finished_at"] == finished.isoformat()
+        assert json.loads(row["per_source_json"]) == per_source
+    finally:
+        conn.close()
+
+
+def test_add_company_dedups_and_preserves_existing() -> None:
+    """add_company is idempotent on (ats, token) and never clobbers a verified row."""
+    now = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+    conn = connect(":memory:")
+    try:
+        init_db(conn)
+        add_company(conn, "greenhouse", "acme", name="Acme", verified=True, now=now)
+        # Discovery re-sees it as unverified: must not downgrade or duplicate.
+        add_company(conn, "greenhouse", "acme", name="Acme Inc", verified=False, now=now)
+        add_company(conn, "lever", "acmeco", now=now)
+
+        all_rows = get_companies(conn)
+        assert len(all_rows) == 2
+
+        acme = get_companies(conn, ats="greenhouse")
+        assert len(acme) == 1
+        assert acme[0]["name"] == "Acme"  # original preserved
+        assert acme[0]["verified"] == 1  # not downgraded
+    finally:
+        conn.close()
+
+
+def test_prune_removes_only_rows_older_than_cutoff() -> None:
+    """prune deletes jobs whose last_seen_at predates the cutoff, returns the count,
+    and cascades to their scores/status."""
+    now = datetime(2026, 6, 30, 12, 0, tzinfo=UTC)
+    fresh = now - timedelta(days=5)
+    stale = now - timedelta(days=40)
+    conn = connect(":memory:")
+    try:
+        init_db(conn)
+        fresh_job = _make_job(
+            first_seen=fresh,
+            last_seen=fresh,
+            source_id="fresh",
+            id=make_job_id("greenhouse", "fresh"),
+        )
+        stale_job = _make_job(
+            first_seen=stale,
+            last_seen=stale,
+            source_id="stale",
+            id=make_job_id("greenhouse", "stale"),
+        )
+        upsert_job(conn, fresh_job)
+        upsert_job(conn, stale_job)
+        save_score(
+            conn,
+            stale_job.id,
+            ScoreBreakdown(
+                final=50.0, semantic=0.5, skill=0.5, location=0.5, recency=0.5, scored_at=stale
+            ),
+        )
+
+        deleted = prune(conn, not_seen_days=30, now=now)
+        assert deleted == 1
+
+        remaining = conn.execute("SELECT id FROM jobs").fetchall()
+        assert [r["id"] for r in remaining] == [fresh_job.id]
+        # Stale job's score cascaded away.
+        assert conn.execute("SELECT COUNT(*) FROM scores").fetchone()[0] == 0
     finally:
         conn.close()

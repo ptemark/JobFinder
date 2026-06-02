@@ -8,7 +8,7 @@ human-readable rollup.
 
 | Milestone | Scope | Status |
 |-----------|-------|--------|
-| M1 — Skeleton + DB | scaffold, settings, models, SQLite store | in progress |
+| M1 — Skeleton + DB | scaffold, settings, models, SQLite store | done |
 | M2 — Sources + normalizer | http client, Greenhouse/Lever, normalize | not started |
 | M3 — Resume + filters + scoring | extraction, embeddings, scoring math | not started |
 | M4 — Dashboard | FastAPI API + static SPA | not started |
@@ -24,6 +24,7 @@ human-readable rollup.
 | T03 — Core data models | done | `RawPosting` (frozen), `Job`, `ScoreBreakdown` dataclasses + `LocationBucket`/`Seniority`/`Status` enums per LLD §2; `StrEnum` (ruff UP042-mandated, modern equivalent of the LLD's `(str, Enum)`) so members round-trip to the TEXT columns. Stable id via `make_job_id` = `sha1("{source}:{source_id}")[:16]` (+ `Job.make_id` alias). 10 tests: id stability/distinctness/length, enum round-trips, frozen RawPosting, dataclass defaults. |
 | T04 — SQLite schema & connection | done | `connect()` applies LLD §7.1 PRAGMAs (WAL, synchronous=NORMAL, busy_timeout=5000, foreign_keys=ON) + `sqlite3.Row` + auto parent-dir; `init_db()` runs the full §7.2 DDL via `executescript` (all `IF NOT EXISTS` → idempotent). 5 tests (PRAGMAs on file db, parent-dir, all tables/indexes, idempotent re-run, UNIQUE dup rejected). No new deps. |
 | T05 — Job upsert & dedupe | done | `upsert_job` = `INSERT ... ON CONFLICT(source, source_id) DO UPDATE` (LLD §7.3): idempotent re-poll preserves `first_seen_at` (omitted from SET), bumps `last_seen_at`, refreshes mutable fields incl. `embedding`/`eligible`/`ineligible_reason`/`content_hash`. `_job_params` coerces bool→int, StrEnum→value, datetime→ISO, `raw`→JSON. Added `eligible`/`ineligible_reason`/`content_hash` to `Job` (DDL §7.2 + pipeline §8 require them; LLD §2 listing abbreviates them out). 2 new tests (insert+coercion, dedupe idempotency). M1 store layer continues in T06. |
+| T06 — Scores/status/runs/companies/prune DAL | done | Remaining LLD §7.3 ops: `save_score` & `set_status` upsert on their PK (re-score/re-status replace, never duplicate); `start_run`/`finish_run` open then close a `poll_runs` row (`started_at`, then `finished_at`+`per_source_json` funnel); `add_company` = `ON CONFLICT(ats,token) DO NOTHING` (discovery dedup, never downgrades a verified entry) + `get_companies` reader; `prune(not_seen_days)` deletes by lexicographic ISO `last_seen_at < cutoff`, returns rowcount, cascades scores/status via FK. `now` injectable on all clock-using ops for deterministic tests. 6 new tests (score upsert, cascade delete, status upsert, run bookkeeping, company dedup/preserve, prune+cascade). **M1 store layer complete.** No new deps (stdlib). |
 
 ## TODO verify (real-world unknowns to confirm)
 

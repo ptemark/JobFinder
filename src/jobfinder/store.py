@@ -2,20 +2,21 @@
 
 This module owns the database connection and schema. :func:`connect` opens a
 connection with the operational PRAGMAs (LLD §7.1) applied, and :func:`init_db`
-runs the idempotent DDL (LLD §7.2). Higher-level operations (upsert, scores,
-status, runs, prune) are added by later tasks.
+runs the idempotent DDL (LLD §7.2). The data-access operations — job upsert,
+score/status writes, poll-run bookkeeping, company read/write, and prune —
+implement LLD §7.3.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from jobfinder.models import Job
+    from jobfinder.models import Job, ScoreBreakdown, Status
 
 # Connection PRAGMAs (LLD §7.1). WAL + NORMAL synchronous give crash-safe,
 # concurrent-reader-friendly writes for the single-writer poll; busy_timeout
@@ -175,4 +176,185 @@ def upsert_job(conn: sqlite3.Connection, job: Job) -> None:
     conn.commit()
 
 
-__all__ = ["connect", "init_db", "upsert_job"]
+def _now(now: datetime | None) -> datetime:
+    """Resolve an injectable ``now`` to a concrete UTC datetime.
+
+    Callers inject ``now`` in tests for determinism (RALPH testing standards);
+    production callers leave it ``None`` and get the wall clock.
+    """
+    return now if now is not None else datetime.now(UTC)
+
+
+# --- Scores (LLD §7.3) ------------------------------------------------------
+
+# scores has a PRIMARY KEY on job_id, so re-scoring a job (e.g. its content
+# changed) upserts onto the one row rather than erroring or duplicating.
+_SAVE_SCORE = """
+INSERT INTO scores (job_id, final, semantic, skill, location, recency, scored_at)
+VALUES (:job_id, :final, :semantic, :skill, :location, :recency, :scored_at)
+ON CONFLICT(job_id) DO UPDATE SET
+  final = excluded.final,
+  semantic = excluded.semantic,
+  skill = excluded.skill,
+  location = excluded.location,
+  recency = excluded.recency,
+  scored_at = excluded.scored_at
+"""
+
+
+def save_score(conn: sqlite3.Connection, job_id: str, sb: ScoreBreakdown) -> None:
+    """Persist a job's :class:`ScoreBreakdown`, upserting on re-score (LLD §7.3).
+
+    The row is owned by ``jobs`` via ``ON DELETE CASCADE`` (LLD §7.2): deleting
+    the job removes its score.
+    """
+    conn.execute(
+        _SAVE_SCORE,
+        {
+            "job_id": job_id,
+            "final": sb.final,
+            "semantic": sb.semantic,
+            "skill": sb.skill,
+            "location": sb.location,
+            "recency": sb.recency,
+            "scored_at": _iso(sb.scored_at),
+        },
+    )
+    conn.commit()
+
+
+# --- Status (LLD §7.3) ------------------------------------------------------
+
+_SET_STATUS = """
+INSERT INTO status (job_id, state, updated_at)
+VALUES (:job_id, :state, :updated_at)
+ON CONFLICT(job_id) DO UPDATE SET
+  state = excluded.state,
+  updated_at = excluded.updated_at
+"""
+
+
+def set_status(
+    conn: sqlite3.Connection,
+    job_id: str,
+    state: Status,
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Set a job's user-facing status (new/interested/applied/dismissed), upserting
+    onto its single status row and stamping ``updated_at`` (LLD §7.3)."""
+    conn.execute(
+        _SET_STATUS,
+        {"job_id": job_id, "state": str(state), "updated_at": _iso(_now(now))},
+    )
+    conn.commit()
+
+
+# --- Poll runs (LLD §7.3) ---------------------------------------------------
+
+
+def start_run(conn: sqlite3.Connection, *, now: datetime | None = None) -> int:
+    """Open a poll-run row stamped with ``started_at`` and return its id (LLD §8).
+
+    ``finished_at``/``per_source_json`` stay NULL until :func:`finish_run`.
+    """
+    cur = conn.execute("INSERT INTO poll_runs (started_at) VALUES (?)", (_iso(_now(now)),))
+    conn.commit()
+    run_id = cur.lastrowid
+    assert run_id is not None  # AUTOINCREMENT PK always yields a rowid on INSERT
+    return run_id
+
+
+def finish_run(
+    conn: sqlite3.Connection,
+    run_id: int,
+    per_source: dict[str, object],
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Close a poll-run row: stamp ``finished_at`` and store the per-source count
+    funnel as JSON (LLD §8 / §12)."""
+    conn.execute(
+        "UPDATE poll_runs SET finished_at = ?, per_source_json = ? WHERE id = ?",
+        (_iso(_now(now)), json.dumps(per_source), run_id),
+    )
+    conn.commit()
+
+
+# --- Companies (LLD §7.3) ---------------------------------------------------
+
+# Discovery appends *unverified* board tokens, deduping against what's already
+# known (LLD §3.6 / T23). ON CONFLICT DO NOTHING preserves the existing row —
+# notably it never downgrades a verified entry back to unverified.
+_ADD_COMPANY = """
+INSERT INTO companies (ats, token, name, verified, added_at)
+VALUES (:ats, :token, :name, :verified, :added_at)
+ON CONFLICT(ats, token) DO NOTHING
+"""
+
+
+def add_company(
+    conn: sqlite3.Connection,
+    ats: str,
+    token: str,
+    *,
+    name: str | None = None,
+    verified: bool = False,
+    now: datetime | None = None,
+) -> None:
+    """Append a company board token, deduping on ``(ats, token)`` (LLD §7.3).
+
+    An existing row is left untouched, so re-running discovery is idempotent and
+    a previously verified entry is never clobbered.
+    """
+    conn.execute(
+        _ADD_COMPANY,
+        {
+            "ats": ats,
+            "token": token,
+            "name": name,
+            "verified": int(verified),
+            "added_at": _iso(_now(now)),
+        },
+    )
+    conn.commit()
+
+
+def get_companies(conn: sqlite3.Connection, *, ats: str | None = None) -> list[sqlite3.Row]:
+    """Return stored companies, optionally filtered to one ATS (LLD §7.3)."""
+    if ats is not None:
+        return conn.execute(
+            "SELECT * FROM companies WHERE ats = ? ORDER BY token", (ats,)
+        ).fetchall()
+    return conn.execute("SELECT * FROM companies ORDER BY ats, token").fetchall()
+
+
+# --- Pruning (LLD §7.3) -----------------------------------------------------
+
+
+def prune(conn: sqlite3.Connection, *, not_seen_days: int, now: datetime | None = None) -> int:
+    """Delete jobs not seen in ``not_seen_days`` and return how many were removed.
+
+    Stale rows are those whose ``last_seen_at`` predates the cutoff. Scores and
+    status rows cascade away with the job (LLD §7.2 ``ON DELETE CASCADE``). The
+    comparison is lexicographic on the ISO-8601 ``last_seen_at`` text, which is
+    correct because every timestamp is stored as a UTC ``isoformat`` string.
+    """
+    cutoff = _iso(_now(now) - timedelta(days=not_seen_days))
+    cur = conn.execute("DELETE FROM jobs WHERE last_seen_at < ?", (cutoff,))
+    conn.commit()
+    return cur.rowcount
+
+
+__all__ = [
+    "connect",
+    "init_db",
+    "upsert_job",
+    "save_score",
+    "set_status",
+    "start_run",
+    "finish_run",
+    "add_company",
+    "get_companies",
+    "prune",
+]
