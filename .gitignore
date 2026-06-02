@@ -49,6 +49,8 @@ logs/
 # Secrets and personal data (never committed — Cost & Safety §4)
 .env
 config/resume.*
+# Personal résumé kept at repo root (belongs in config/resume.* per spec)
+/Peter_Mark_Resume.*
 # Local, user-specific generated config (examples are committed)
 config/profile.yaml
 config/companies.yaml
