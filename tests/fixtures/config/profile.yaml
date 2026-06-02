@@ -1,0 +1,10 @@
+role_keywords: ["backend", "software engineer", "developer"]
+must_have_skills: ["java", "kotlin", "python", "aws"]
+seniority_include: ["mid", "senior", "staff"]
+seniority_exclude: ["junior", "intern", "manager"]
+locations_priority: ["remote", "vancouver", "toronto", "other_canada"]
+max_age_days: 21
+retention_days: 30
+resume_path: "config/resume.txt"
+embed_model: "all-MiniLM-L6-v2"
+role_keyword_required: true

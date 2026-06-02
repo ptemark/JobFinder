@@ -20,8 +20,12 @@ human-readable rollup.
 | Task | Status | Notes |
 |------|--------|-------|
 | T01 — Repo scaffold & packaging | done | uv project; `jobfinder` entry point wired to no-op Typer `app`; deps added per-task (see RALPH.md), full pinned target in requirements.txt (LLD §14); Python pinned to 3.12 for later torch CPU wheels. |
+| T02 — Settings & config loading | done | pydantic-settings `Settings` (env + `.env`, `JOBFINDER_*` prefix, paths from `base_dir`); Adzuna secrets via unprefixed `.env` aliases, `adzuna_enabled` gated on both keys. `Profile`/`Weights`/`CompaniesConfig` models with fail-fast `load_*` helpers; `*.example` configs + `.env.example` shipped. 14 tests (valid/malformed/missing-secret). |
 
 ## TODO verify (real-world unknowns to confirm)
 
-- _none yet_ — company board tokens will be seeded with `# TODO verify` markers
-  in `config/companies.yaml.example` when that task (T02) lands.
+- **Company board tokens** in `config/companies.yaml.example` are seeded as
+  plausible Canadian/remote employers but the exact ATS slugs are UNCONFIRMED
+  (`# TODO verify`): greenhouse `shopify`/`benevity`/`clio`, lever
+  `jobber`/`thinkific`, ashby `wealthsimple`. Confirm each against the live feed
+  and flip `verified: true`.

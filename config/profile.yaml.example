@@ -1,0 +1,22 @@
+# Targeting profile (LLD §11.1). Copy to profile.yaml and edit.
+# `jobfinder init` does this copy for you. profile.yaml itself is gitignored.
+
+# Keywords any of which marks a posting as a backend SWE/developer role.
+role_keywords: ["backend", "software engineer", "developer", "backend engineer"]
+# Must-have skills; matches are bonus-weighted heavily so they steer ranking.
+must_have_skills: ["java", "kotlin", "python", "aws"]
+# Seniority levels to keep / drop (see normalize.infer_seniority).
+seniority_include: ["mid", "senior", "staff"]
+seniority_exclude: ["junior", "intern", "manager", "director", "principal_nonic"]
+# Location buckets in priority order (remote > vancouver > toronto > other_canada).
+locations_priority: ["remote", "vancouver", "toronto", "other_canada"]
+# Hard recency cutoff in days: older postings are never shown, scored or embedded.
+max_age_days: 21
+# Delete jobs not seen in this many days to keep the DB small (HLD §4.5).
+retention_days: 30
+# Path to your full résumé (pdf/docx/txt/md). Gitignored — stays local.
+resume_path: "config/resume.pdf"
+# Embedding model: "all-MiniLM-L6-v2" (fast) or "all-mpnet-base-v2" (higher quality).
+embed_model: "all-MiniLM-L6-v2"
+# Require a role keyword to pass the eligibility role gate.
+role_keyword_required: true

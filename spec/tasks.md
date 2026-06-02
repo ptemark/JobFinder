@@ -34,7 +34,7 @@ Legend: **[P0]** must-have for a working product · **[P1]** completeness · **[
 - **Done when:** `pip install -e .` succeeds; `jobfinder --help` exits 0; `pytest`
   collects 0 tests without error; `ruff check` clean.
 
-### T02 — Settings & config loading  **[P0]**
+### T02 — Settings & config loading  **[P0]**  `[x] Complete`
 - **Depends on:** T01
 - **Files:** `src/jobfinder/settings.py`, `config/*.example` files, `.env.example`,
   `tests/test_settings.py`, `tests/fixtures/config/*`
@@ -329,6 +329,7 @@ Legend: **[P0]** must-have for a working product · **[P1]** completeness · **[
 | # | Date | Task | Files | Notes |
 |---|------|------|-------|-------|
 | 1 | 2026-06-02 | T01 Repo scaffold & packaging | pyproject.toml, requirements.txt, .python-version, .gitignore, PROGRESS.md, src/jobfinder/{__init__,cli}.py, tests/{__init__,test_cli}.py | uv project (Python pinned 3.12 for later torch CPU wheels); `jobfinder = jobfinder.cli:app` entry point wired to no-op Typer app w/ root callback (empty group needs it for `--help`); deps added per-task per RALPH.md, full pinned target in requirements.txt (LLD §14); removed leftover IntelliJ `src/Main.java` stub; CI green (ruff format/check clean, 3 smoke tests pass, `--help` exits 0). |
+| 2 | 2026-06-02 | T02 Settings & config loading | src/jobfinder/settings.py, config/{profile,companies,weights}.yaml.example, .env.example, tests/test_settings.py, tests/fixtures/config/* | pydantic-settings `Settings` (env+`.env`, `JOBFINDER_*` prefix; paths derived from `base_dir`); Adzuna secrets carry unprefixed `.env` aliases + `populate_by_name=True` so both env-load and direct construction work; `adzuna_enabled` true only with both keys. `Profile`/`Weights`/`CompaniesConfig` pydantic models w/ `extra=forbid` + fail-fast `load_*` helpers; weights validator rejects all-zero denominator. Deps pydantic/pydantic-settings/pyyaml (pre-approved LLD §14). 14 tests cover valid→typed, malformed→ValidationError, missing-Adzuna→flag. CI green. |
 
 ## Dependency summary (critical path)
 T01→T02/T03 → T04→T05→T06 (store) ; T07→T08 + T09→T10 (fetch/normalize) ;

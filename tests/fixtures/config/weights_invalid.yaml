@@ -1,0 +1,5 @@
+# Malformed: every weight is zero, so the weighted-sum denominator would be zero.
+semantic: 0
+skill: 0
+location: 0
+recency: 0

@@ -1,0 +1,7 @@
+greenhouse:
+  - { token: "acme", name: "Acme", verified: true }
+  - { token: "globex", verified: false }
+lever:
+  - { token: "initech", name: "Initech", verified: false }
+ashby:
+  - { token: "umbrella", name: "Umbrella", verified: false }

@@ -1,0 +1,9 @@
+# Malformed: must_have_skills is empty (violates min_length=1) and max_age_days
+# is non-positive (violates gt=0). Loading this must fail fast with a precise error.
+role_keywords: ["backend"]
+must_have_skills: []
+seniority_include: ["mid", "senior"]
+seniority_exclude: ["junior"]
+locations_priority: ["remote"]
+max_age_days: 0
+retention_days: 30

@@ -1,0 +1,8 @@
+# Scoring weights (LLD §6.3–§6.4). Kept separate from profile.yaml so tuning the
+# ranker is not a profile edit. Copy to weights.yaml to override the defaults.
+# At least one weight must be > 0 (it is the weighted-sum denominator).
+
+semantic: 0.35   # résumé ↔ posting cosine similarity
+skill:    0.30   # heavy — Java/Kotlin/Python/AWS must steer the match
+location: 0.20   # remote > vancouver > toronto > other_canada
+recency:  0.15   # newer postings rank above older ones within the 21-day window
