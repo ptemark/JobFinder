@@ -60,7 +60,7 @@ Legend: **[P0]** must-have for a working product · **[P1]** completeness · **[
 
 ## Phase 1 — Persistence
 
-### T04 — SQLite schema & connection  **[P0]**
+### T04 — SQLite schema & connection  **[P0]**  `[x] Complete`
 - **Depends on:** T03
 - **Files:** `src/jobfinder/store.py` (connect + DDL), `tests/test_store.py`
 - **Do:** Implement connection with PRAGMAs (WAL, synchronous=NORMAL, busy_timeout=5000,
@@ -330,6 +330,7 @@ Legend: **[P0]** must-have for a working product · **[P1]** completeness · **[
 |---|------|------|-------|-------|
 | 1 | 2026-06-02 | T01 Repo scaffold & packaging | pyproject.toml, requirements.txt, .python-version, .gitignore, PROGRESS.md, src/jobfinder/{__init__,cli}.py, tests/{__init__,test_cli}.py | uv project (Python pinned 3.12 for later torch CPU wheels); `jobfinder = jobfinder.cli:app` entry point wired to no-op Typer app w/ root callback (empty group needs it for `--help`); deps added per-task per RALPH.md, full pinned target in requirements.txt (LLD §14); removed leftover IntelliJ `src/Main.java` stub; CI green (ruff format/check clean, 3 smoke tests pass, `--help` exits 0). |
 | 2 | 2026-06-02 | T02 Settings & config loading | src/jobfinder/settings.py, config/{profile,companies,weights}.yaml.example, .env.example, tests/test_settings.py, tests/fixtures/config/* | pydantic-settings `Settings` (env+`.env`, `JOBFINDER_*` prefix; paths derived from `base_dir`); Adzuna secrets carry unprefixed `.env` aliases + `populate_by_name=True` so both env-load and direct construction work; `adzuna_enabled` true only with both keys. `Profile`/`Weights`/`CompaniesConfig` pydantic models w/ `extra=forbid` + fail-fast `load_*` helpers; weights validator rejects all-zero denominator. Deps pydantic/pydantic-settings/pyyaml (pre-approved LLD §14). 14 tests cover valid→typed, malformed→ValidationError, missing-Adzuna→flag. CI green. |
+| 4 | 2026-06-02 | T04 SQLite schema & connection | src/jobfinder/store.py, tests/test_store.py | `connect()` applies LLD §7.1 PRAGMAs (WAL, synchronous=NORMAL, busy_timeout=5000, foreign_keys=ON) + `sqlite3.Row` factory + auto-creates parent dir (skips for `:memory:`); `init_db()` runs the full §7.2 DDL via `executescript` (all `IF NOT EXISTS` → idempotent). T04 scope is connect+DDL only; upserts/scores/runs/prune land in T05/T06. 5 tests: PRAGMAs verified on a file-backed db (WAL needs a real file, not `:memory:`), parent-dir creation, all tables+indexes present, idempotent re-run preserves rows, UNIQUE(source,source_id) rejects dupes. No new deps (stdlib sqlite3). CI green (29 tests, ruff clean). |
 | 3 | 2026-06-02 | T03 Core data models | src/jobfinder/models.py, tests/test_models.py | `RawPosting` (frozen), `Job`, `ScoreBreakdown` dataclasses + `LocationBucket`/`Seniority`/`Status` enums (LLD §2). Used stdlib `StrEnum` instead of the LLD's illustrative `(str, Enum)` — ruff UP042 mandates it and it's the modern 3.11+ idiom; members still `==` their string value and round-trip to the TEXT columns. Stable dedupe id `make_job_id` = `sha1("{source}:{source_id}")[:16]` (HLD §4.4) with `Job.make_id` alias. 10 tests: id stability/distinctness across source/length+hex, enum round-trips, frozen RawPosting, dataclass defaults. No new deps. CI green (24 tests, ruff clean). |
 
 ## Dependency summary (critical path)
