@@ -1,0 +1,36 @@
+{
+  "jobs": [
+    {
+      "id": 4012001,
+      "title": "Senior Backend Engineer",
+      "updated_at": "2026-05-30T14:22:00-04:00",
+      "location": {"name": "Remote - Canada"},
+      "absolute_url": "https://boards.greenhouse.io/acme/jobs/4012001",
+      "content": "&lt;p&gt;Build backend services in &lt;strong&gt;Java&lt;/strong&gt; and AWS.&lt;/p&gt;",
+      "company_name": "Acme"
+    },
+    {
+      "id": 4012002,
+      "title": "Staff Software Engineer, Platform",
+      "updated_at": "2026-01-05T09:00:00-05:00",
+      "location": {"name": "Toronto, ON"},
+      "absolute_url": "https://boards.greenhouse.io/acme/jobs/4012002",
+      "content": "&lt;p&gt;Lead platform work.&lt;/p&gt;",
+      "company_name": "Acme"
+    },
+    {
+      "id": 4012003,
+      "title": "Backend Developer",
+      "updated_at": null,
+      "location": {"name": "Vancouver, BC"},
+      "absolute_url": "https://boards.greenhouse.io/acme/jobs/4012003",
+      "content": "&lt;p&gt;Python services team.&lt;/p&gt;",
+      "company_name": "Acme"
+    },
+    {
+      "title": "Posting With No Id",
+      "updated_at": "2026-05-31T00:00:00-04:00",
+      "location": {"name": "Remote - Canada"}
+    }
+  ]
+}
