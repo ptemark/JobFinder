@@ -27,6 +27,7 @@ from jobfinder.sources.base import (
 )
 from jobfinder.sources.greenhouse import GreenhouseSource
 from jobfinder.sources.http import HttpClient
+from jobfinder.sources.lever import LeverSource
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -253,6 +254,169 @@ def test_greenhouse_unexpected_shape_noted(tmp_path: Path) -> None:
     bad = httpx.Response(200, json={"unexpected": True})
     client = _greenhouse_client(tmp_path, {"acme": bad})
     source = GreenhouseSource(
+        companies=[CompanyEntry(token="acme")],
+        client=client,
+        now=lambda: _NOW,
+    )
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert result.raw == []
+    assert result.fetched == 0
+    assert any("unexpected payload shape" in note for note in result.errors)
+
+
+# --- Lever adapter (T12) ----------------------------------------------------
+
+
+def _lever_handler(sites: dict[str, list[dict]], calls: list[str] | None = None):
+    """A MockTransport handler serving a site's postings array with skip/limit
+    pagination, so the adapter's paging is exercised exactly as in production."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if calls is not None:
+            calls.append(str(request.url))
+        token = request.url.path.split("/")[3]  # /v0/postings/{token}
+        if token not in sites:
+            return httpx.Response(404, json={"error": "not found"})
+        skip = int(request.url.params.get("skip", "0"))
+        limit = int(request.url.params.get("limit", "100"))
+        return httpx.Response(200, json=sites[token][skip : skip + limit])
+
+    return handler
+
+
+def _lever_client(
+    tmp_path: Path, sites: dict[str, list[dict]], calls: list[str] | None = None
+) -> HttpClient:
+    return HttpClient(
+        cache_dir=tmp_path / "cache",
+        throttle_s=0.0,
+        transport=httpx.MockTransport(_lever_handler(sites, calls)),
+        sleep=lambda _dt: None,
+        rng=random.Random(0),
+    )
+
+
+def _lever_fixture() -> list[dict]:
+    body = (FIXTURES / "lever_postings.json").read_text(encoding="utf-8")
+    return json.loads(body)
+
+
+def test_lever_fetch_parses_fixture(tmp_path: Path) -> None:
+    client = _lever_client(tmp_path, {"acme": _lever_fixture()})
+    source = LeverSource(
+        companies=[CompanyEntry(token="acme", name="Acme Co")],
+        client=client,
+        now=lambda: _NOW,
+    )
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert result.source == "lever"
+    assert all(isinstance(rp, RawPosting) for rp in result.raw)
+    assert all(rp.source == "lever" for rp in result.raw)
+    # 4 postings returned by the provider; the id-less one is skipped+noted.
+    assert result.fetched == 4
+    assert any("no id" in note for note in result.errors)
+
+
+def test_lever_recency_prefilter_drops_stale(tmp_path: Path) -> None:
+    client = _lever_client(tmp_path, {"acme": _lever_fixture()})
+    source = LeverSource(
+        companies=[CompanyEntry(token="acme", name="Acme Co")],
+        client=client,
+        now=lambda: _NOW,
+    )
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    kept_ids = {rp.source_id for rp in result.raw}
+    # Fresh (abc-0001) and date-unknown (abc-0003) survive; stale (abc-0002) drops.
+    assert kept_ids == {"abc-0001", "abc-0003"}
+    assert result.kept_after_recency == 2
+
+
+def test_lever_raw_posting_normalizes_with_company_hint(tmp_path: Path) -> None:
+    """The recency-filtered RawPostings feed normalize cleanly; the company name
+    comes from the configured site (Lever payloads carry none, LLD §3.4)."""
+    client = _lever_client(tmp_path, {"acme": _lever_fixture()})
+    source = LeverSource(
+        companies=[CompanyEntry(token="acme", name="Acme Co")],
+        client=client,
+        now=lambda: _NOW,
+    )
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+    by_id = {rp.source_id: rp for rp in result.raw}
+
+    fresh = normalize(by_id["abc-0001"], company_hint="Acme Co", now=_NOW)
+    assert fresh.company == "Acme Co"  # supplied hint, not in payload
+    assert fresh.title == "Senior Backend Engineer"
+    assert fresh.description == "Build backend services in Java and AWS."  # descriptionPlain
+    assert fresh.url == "https://jobs.lever.co/acme/abc-0001"
+    assert fresh.posted_at is not None  # epoch-ms createdAt parsed
+    assert fresh.posted_at.year == 2026 and fresh.posted_at.month == 5
+    assert fresh.date_unknown is False
+
+    undated = normalize(by_id["abc-0003"], company_hint="Acme Co", now=_NOW)
+    assert undated.date_unknown is True  # null createdAt -> kept, flagged
+    assert undated.description == "Python services team."  # HTML description stripped
+
+
+def test_lever_pagination_stops_on_short_page(tmp_path: Path) -> None:
+    """With a small page size the adapter walks pages via ``skip`` and stops once
+    a page shorter than the limit is returned — no extra request is made."""
+    postings = [
+        {"id": "p1", "text": "Backend Engineer", "createdAt": 1780150920000},
+        {"id": "p2", "text": "Backend Engineer", "createdAt": 1780150920000},
+        {"id": "p3", "text": "Backend Engineer", "createdAt": 1780150920000},
+    ]
+    calls: list[str] = []
+    client = _lever_client(tmp_path, {"acme": postings}, calls)
+    source = LeverSource(
+        companies=[CompanyEntry(token="acme")],
+        client=client,
+        now=lambda: _NOW,
+        page_limit=2,
+    )
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert {rp.source_id for rp in result.raw} == {"p1", "p2", "p3"}
+    assert result.fetched == 3
+    # Page 0 (skip=0, full) then page 1 (skip=2, short) — exactly two requests.
+    assert len(calls) == 2
+    assert "skip=0" in calls[0]
+    assert "skip=2" in calls[1]
+
+
+def test_lever_site_error_is_isolated(tmp_path: Path) -> None:
+    """One site 404ing is recorded but never loses the healthy site's postings."""
+    client = _lever_client(tmp_path, {"acme": _lever_fixture()})  # "boom" absent -> 404
+    source = LeverSource(
+        companies=[CompanyEntry(token="boom"), CompanyEntry(token="acme")],
+        client=client,
+        now=lambda: _NOW,
+    )
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert {rp.source_id for rp in result.raw} == {"abc-0001", "abc-0003"}
+    assert any("boom" in note and "fetch failed" in note for note in result.errors)
+
+
+def test_lever_unexpected_shape_noted(tmp_path: Path) -> None:
+    """A payload that is not a JSON array is noted, not fatal."""
+    bad = httpx.Response(200, json={"unexpected": True})
+    client = HttpClient(
+        cache_dir=tmp_path / "cache",
+        throttle_s=0.0,
+        transport=httpx.MockTransport(lambda _req: bad),
+        sleep=lambda _dt: None,
+        rng=random.Random(0),
+    )
+    source = LeverSource(
         companies=[CompanyEntry(token="acme")],
         client=client,
         now=lambda: _NOW,

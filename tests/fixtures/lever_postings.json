@@ -1,0 +1,34 @@
+[
+  {
+    "id": "abc-0001",
+    "text": "Senior Backend Engineer",
+    "createdAt": 1780150920000,
+    "categories": {"location": "Remote - Canada", "commitment": "Full-time"},
+    "hostedUrl": "https://jobs.lever.co/acme/abc-0001",
+    "applyUrl": "https://jobs.lever.co/acme/abc-0001/apply",
+    "descriptionPlain": "Build backend services in Java and AWS.",
+    "salaryRange": {"currency": "CAD", "min": 150000, "max": 190000}
+  },
+  {
+    "id": "abc-0002",
+    "text": "Staff Software Engineer, Platform",
+    "createdAt": 1767603600000,
+    "categories": {"location": "Toronto, ON"},
+    "hostedUrl": "https://jobs.lever.co/acme/abc-0002",
+    "descriptionPlain": "Lead platform work."
+  },
+  {
+    "id": "abc-0003",
+    "text": "Backend Developer",
+    "createdAt": null,
+    "categories": {"location": "Vancouver, BC"},
+    "hostedUrl": "https://jobs.lever.co/acme/abc-0003",
+    "description": "<p>Python services team.</p>"
+  },
+  {
+    "text": "Posting With No Id",
+    "createdAt": 1780185600000,
+    "categories": {"location": "Remote - Canada"},
+    "hostedUrl": "https://jobs.lever.co/acme/no-id"
+  }
+]
