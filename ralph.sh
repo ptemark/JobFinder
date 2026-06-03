@@ -24,6 +24,20 @@ LOG_DIR="$SCRIPT_DIR/logs"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 GIT_BRANCH="main"          # adjust if your default branch differs
 
+# Transient-API-error retry policy.
+# The Claude CLI prints a line like "API Error: Overloaded" (Anthropic HTTP 529,
+# servers under load) and exits non-zero when a request fails for a transient,
+# server-side reason. That is NOT a project failure — without a retry here the
+# script's `set -euo pipefail` aborts the whole autonomous loop on a single
+# hiccup (this happened on 2026-06-02, killing the run at iteration 1). Retry
+# the same invocation with exponential backoff before giving up.
+MAX_API_RETRIES=5          # attempts per iteration before treating it as fatal
+API_RETRY_BASE_DELAY=10    # seconds; backoff doubles each attempt: 10,20,40,80
+# Anchored "API Error:" is exactly what the CLI emits on a failed request. It is
+# specific enough not to match normal task output that merely mentions retries,
+# timeouts, or HTTP status codes (e.g. the T07 HTTP-client work).
+API_ERROR_PATTERN='^API Error:'
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -192,6 +206,43 @@ EOF
     fi
 }
 
+# Run a single `claude` invocation, capturing to $1, retrying transient API
+# errors (e.g. "API Error: Overloaded") with exponential backoff. Returns 0 on a
+# clean run, non-zero only after MAX_API_RETRIES exhausted or on a genuine
+# (non-transient) failure. Uses `|| rc=$?` so `set -e` does not abort here.
+run_claude() {
+    local log_file=$1
+    local attempt=1
+    local delay=$API_RETRY_BASE_DELAY
+    local rc
+
+    while true; do
+        rc=0
+        if [[ "$VERBOSE" == "true" ]]; then
+            claude --dangerously-skip-permissions -p "$(cat "$RALPH_PROMPT")" 2>&1 | tee "$log_file" || rc=$?
+        else
+            claude --dangerously-skip-permissions -p "$(cat "$RALPH_PROMPT")" > "$log_file" 2>&1 || rc=$?
+        fi
+
+        # Transient if the CLI exited non-zero OR printed an "API Error:" line
+        # (it sometimes does both, sometimes only the latter).
+        if [[ $rc -eq 0 ]] && ! grep -qE "$API_ERROR_PATTERN" "$log_file"; then
+            return 0
+        fi
+
+        if [[ $attempt -ge $MAX_API_RETRIES ]]; then
+            error "claude failed after $attempt attempts (exit=$rc). Last output:"
+            cat "$log_file"
+            return "$(( rc == 0 ? 1 : rc ))"
+        fi
+
+        warn "Transient API error on attempt $attempt (exit=$rc): $(head -1 "$log_file"). Retrying in ${delay}s..."
+        sleep "$delay" || true
+        attempt=$((attempt + 1))
+        delay=$((delay * 2))
+    done
+}
+
 run_iteration() {
     local iteration=$1
     local log_file="$LOG_DIR/ralph_${TIMESTAMP}_iter${iteration}.log"
@@ -204,10 +255,12 @@ run_iteration() {
 
     cd "$SCRIPT_DIR"
 
-    if [[ "$VERBOSE" == "true" ]]; then
-        claude --dangerously-skip-permissions -p "$(cat "$RALPH_PROMPT")" 2>&1 | tee "$log_file"
-    else
-        claude --dangerously-skip-permissions -p "$(cat "$RALPH_PROMPT")" > "$log_file" 2>&1
+    if ! run_claude "$log_file"; then
+        error "Iteration $iteration aborted after exhausting API retries."
+        return 1
+    fi
+
+    if [[ "$VERBOSE" != "true" ]]; then
         log "--- Iteration $iteration output ---"
         cat "$log_file"
         log "--- End of iteration $iteration output ---"

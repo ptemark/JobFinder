@@ -416,6 +416,18 @@ If a task fails repeatedly:
 
 Never loop indefinitely on a broken implementation.
 
+### Transient API errors (`API Error: Overloaded`, 529, rate limits) — not a project failure
+
+A log that contains only a line like `API Error: Overloaded` means the **Anthropic API**
+was overloaded (HTTP 529) or rate-limited when `ralph.sh` invoked the CLI — a transient
+server-side condition, **not** a bug in this repo. Do not "recover" from it by changing
+code or marking tasks blocked. `ralph.sh` now retries the same invocation with exponential
+backoff (`MAX_API_RETRIES` / `API_RETRY_BASE_DELAY`), so an isolated overload no longer
+aborts the loop. If retries are still exhausted, simply re-run `./ralph.sh` later; the
+iteration that emitted the error did no work and committed nothing, so the repo state is
+unchanged. (Seen 2026-06-02: a single overload killed the whole run at iteration 1 because
+there was no retry — that gap is now closed.)
+
 ### What "recovery" does NOT mean
 
 - Do not reduce task scope to dodge the hard part.
