@@ -155,6 +155,20 @@ _JUNIOR_RE = re.compile(r"intern|new ?grad|graduate|junior|\bjr\b\.?|\bentry\b",
 _MID_RE = re.compile(r"\bmid\b|intermediate|\bii\b|\b2\b", re.IGNORECASE)
 
 
+def is_people_manager(title: str) -> bool:
+    """True for a people-manager/executive title that is not clearly an IC role.
+
+    Mirrors the rule in :func:`infer_seniority` (LLD §4.2): a manager/director/
+    VP/head-of/manager title is out of individual-contributor scope unless it is
+    an unambiguous ``staff``/``principal engineer`` IC title. Exposed so the
+    eligibility filter (LLD §5) can reject people-managers without duplicating
+    these patterns — such titles infer to ``UNKNOWN`` seniority, which the filter
+    keeps by design, so the manager check must be explicit.
+    """
+    title_text = title or ""
+    return bool(_MANAGER_RE.search(title_text)) and not _IC_OVERRIDE_RE.search(title_text)
+
+
 def infer_seniority(title: str, description: str) -> Seniority:
     """Infer a :class:`Seniority` band from the title, falling back to the body.
 
@@ -283,6 +297,7 @@ __all__ = [
     "bucket_location",
     "html_to_text",
     "infer_seniority",
+    "is_people_manager",
     "normalize",
     "parse_date",
 ]
