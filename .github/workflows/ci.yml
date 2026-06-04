@@ -27,5 +27,14 @@ jobs:
           uv run ruff check .
           uv run ruff format --check .
 
+      # Persist the SentenceTransformer model between runs so the sanctioned
+      # one-time download (tests/conftest.py embed_model) is not re-fetched every
+      # run — avoids HuggingFace rate-limiting (HTTP 429) the test suite.
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-model-all-MiniLM-L6-v2
+
       - name: Run tests
         run: uv run pytest
