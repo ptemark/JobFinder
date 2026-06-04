@@ -351,9 +351,7 @@ def test_recency_zero_at_cutoff() -> None:
 
 def test_recency_date_unknown_gets_fixed_score() -> None:
     profile = load_profile(_PROFILE_PATH)
-    job = _make_job(
-        title="Backend Engineer", description="Java", posted_at=None, date_unknown=True
-    )
+    job = _make_job(title="Backend Engineer", description="Java", posted_at=None, date_unknown=True)
 
     sb = score_job(job, _UNIT_VEC, _UNIT_VEC, profile=profile, weights=_DEFAULT_WEIGHTS, now=_NOW)
 
@@ -371,9 +369,7 @@ def test_final_is_weight_normalized_and_rounded() -> None:
 
     sb = score_job(job, _UNIT_VEC, _UNIT_VEC, profile=profile, weights=_DEFAULT_WEIGHTS, now=_NOW)
 
-    expected = round(
-        100 * (0.35 * 1.0 + 0.30 * 0.5 + 0.20 * 0.7 + 0.15 * (1 - 10 / 21)), 1
-    )
+    expected = round(100 * (0.35 * 1.0 + 0.30 * 0.5 + 0.20 * 0.7 + 0.15 * (1 - 10 / 21)), 1)
     assert sb.skill == 0.5
     assert sb.final == expected
 
