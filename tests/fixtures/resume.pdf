@@ -1,0 +1,61 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 691 >>
+stream
+BT
+/F1 12 Tf
+14 TL
+72 760 Td
+(Jordan Doe) Tj
+T*
+(Senior Backend Software Engineer) Tj
+T*
+(Vancouver, BC, Canada | jordan@example.com) Tj
+T*
+(SUMMARY) Tj
+T*
+(Senior backend software engineer with 9 years building distributed services) Tj
+T*
+(on the JVM and in Python. Deep experience with Java, Kotlin, and Python, and) Tj
+T*
+(production AWS operations \(ECS, Lambda, DynamoDB, S3\).) Tj
+T*
+(EXPERIENCE) Tj
+T*
+(Staff Engineer, Acme Corp \(2021-present\)) Tj
+T*
+(- Led migration of a Java monolith to Kotlin microservices on AWS.) Tj
+T*
+(- Built Python data pipelines processing billions of events.) Tj
+T*
+(SKILLS) Tj
+T*
+(Java, Kotlin, Python, AWS, PostgreSQL, Kafka, Docker, Terraform.) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000983 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1053
+%%EOF
