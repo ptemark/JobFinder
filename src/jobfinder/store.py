@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -355,6 +356,140 @@ def prune(conn: sqlite3.Connection, *, not_seen_days: int, now: datetime | None 
     return cur.rowcount
 
 
+# --- Job queries for the dashboard (LLD §7.3 / §9) --------------------------
+
+
+@dataclass
+class JobFilters:
+    """Dashboard list filters (LLD §9.1). Every field is optional; ``None`` means
+    "don't constrain on this column". ``include_ineligible`` defaults to ``False``
+    so filtered-out jobs stay hidden behind the debug toggle (LLD §5, §9.2)."""
+
+    bucket: str | None = None
+    source: str | None = None
+    seniority: str | None = None
+    min_score: float | None = None
+    status: str | None = None
+    max_age_days: int | None = None
+    include_ineligible: bool = False
+
+
+# Shared FROM/JOIN for every list/detail query: jobs left-joined with their score
+# and status so unscored (ineligible) jobs and jobs the user hasn't touched still
+# appear (status defaults to 'new' via COALESCE). Aliases keep the row keys stable
+# for the API mapping (LLD §9.2).
+_JOB_FROM = (
+    "FROM jobs j LEFT JOIN scores s ON s.job_id = j.id LEFT JOIN status st ON st.job_id = j.id"
+)
+_JOB_COLUMNS = (
+    "j.*, s.final AS final, s.semantic AS semantic, s.skill AS skill, "
+    "s.location AS location, s.recency AS recency, s.scored_at AS scored_at, "
+    "st.state AS status_state"
+)
+
+# Sort orders (LLD §9.2). NULLS LAST keeps unscored / undated jobs at the bottom
+# rather than the top (SQLite ≥ 3.30 honours the clause).
+_SORT_ORDERS = {
+    "best": "s.final DESC NULLS LAST, j.posted_at DESC NULLS LAST",
+    "newest": "j.posted_at DESC NULLS LAST, s.final DESC NULLS LAST",
+}
+
+
+def _job_where(filters: JobFilters, now: datetime) -> tuple[str, dict[str, object]]:
+    """Build the parameterized WHERE clause for the dashboard filters (LLD §9.1)."""
+    clauses: list[str] = []
+    params: dict[str, object] = {}
+    if not filters.include_ineligible:
+        clauses.append("j.eligible = 1")
+    if filters.bucket is not None:
+        clauses.append("j.location_bucket = :bucket")
+        params["bucket"] = filters.bucket
+    if filters.source is not None:
+        clauses.append("j.source = :source")
+        params["source"] = filters.source
+    if filters.seniority is not None:
+        clauses.append("j.seniority = :seniority")
+        params["seniority"] = filters.seniority
+    if filters.status is not None:
+        # Untouched jobs have no status row; they read as 'new' (LLD §9.2).
+        clauses.append("COALESCE(st.state, 'new') = :status")
+        params["status"] = filters.status
+    if filters.min_score is not None:
+        clauses.append("s.final >= :min_score")
+        params["min_score"] = filters.min_score
+    if filters.max_age_days is not None:
+        # date_unknown (NULL posted_at) jobs pass the age filter — they're flagged,
+        # never silently dropped (spec §7), mirroring the eligibility recency gate.
+        clauses.append("(j.posted_at IS NULL OR j.posted_at >= :age_cutoff)")
+        params["age_cutoff"] = _iso(now - timedelta(days=filters.max_age_days))
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
+def query_jobs(
+    conn: sqlite3.Connection,
+    *,
+    filters: JobFilters | None = None,
+    sort: str = "best",
+    limit: int | None = None,
+    offset: int = 0,
+    now: datetime | None = None,
+) -> list[sqlite3.Row]:
+    """Return jobs (joined with score + status) matching ``filters``, ordered by
+    ``sort`` (``best``|``newest``) with optional pagination (LLD §9.1–§9.2)."""
+    filters = filters if filters is not None else JobFilters()
+    where, params = _job_where(filters, _now(now))
+    order = _SORT_ORDERS.get(sort, _SORT_ORDERS["best"])
+    sql = f"SELECT {_JOB_COLUMNS} {_JOB_FROM}{where} ORDER BY {order}"
+    if limit is not None:
+        sql += " LIMIT :limit OFFSET :offset"
+        params["limit"] = limit
+        params["offset"] = offset
+    return conn.execute(sql, params).fetchall()
+
+
+def count_jobs(
+    conn: sqlite3.Connection,
+    *,
+    filters: JobFilters | None = None,
+    now: datetime | None = None,
+) -> int:
+    """Count jobs matching ``filters`` (the unpaginated total for the list view)."""
+    filters = filters if filters is not None else JobFilters()
+    where, params = _job_where(filters, _now(now))
+    return conn.execute(f"SELECT COUNT(*) {_JOB_FROM}{where}", params).fetchone()[0]
+
+
+def get_job_detail(conn: sqlite3.Connection, job_id: str) -> sqlite3.Row | None:
+    """Return one job joined with its score + status, or ``None`` (LLD §9.1)."""
+    return conn.execute(
+        f"SELECT {_JOB_COLUMNS} {_JOB_FROM} WHERE j.id = :id",
+        {"id": job_id},
+    ).fetchone()
+
+
+def latest_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    """Return the most recent finished poll-run row, or ``None`` (LLD §9.1)."""
+    return conn.execute(
+        "SELECT * FROM poll_runs WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+
+
+def previous_run_finished_at(conn: sqlite3.Connection) -> str | None:
+    """Return the ``finished_at`` of the run *before* the latest finished one.
+
+    A job is "new since last poll" when its ``first_seen_at`` is later than this
+    threshold — i.e. it was first seen during the most recent poll (LLD §7.3).
+    Returns ``None`` when there is no prior run, in which case every job counts as
+    new (the very first poll).
+    """
+    row = conn.execute(
+        "SELECT finished_at FROM poll_runs WHERE finished_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1 OFFSET 1"
+    ).fetchone()
+    return row["finished_at"] if row is not None else None
+
+
 __all__ = [
     "connect",
     "init_db",
@@ -367,4 +502,10 @@ __all__ = [
     "add_company",
     "get_companies",
     "prune",
+    "JobFilters",
+    "query_jobs",
+    "count_jobs",
+    "get_job_detail",
+    "latest_run",
+    "previous_run_finished_at",
 ]

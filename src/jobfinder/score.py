@@ -231,21 +231,29 @@ def _cosine(a: NDArray[np.float32], b: NDArray[np.float32]) -> float:
     return float(np.dot(a, b) / denom)
 
 
+def matched_skills(text: str, must_have_skills: list[str]) -> list[str]:
+    """Return the must-have skills present in ``text`` (LLD §6.3 / §9.2).
+
+    Matches are word-boundary and case-insensitive, so ``java`` matches "Java"
+    but not "javascript". Shared by the scorer's skill component and the
+    dashboard's matched-skill chips so the matching logic lives in one place.
+    """
+    return [
+        skill
+        for skill in must_have_skills
+        if re.search(rf"\b{re.escape(skill)}\b", text, flags=re.IGNORECASE)
+    ]
+
+
 def _skill_score(text: str, must_have_skills: list[str]) -> float:
     """Fraction of must-have skills present in ``text`` (LLD §6.3).
 
-    Matches are word-boundary and case-insensitive, so ``java`` matches "Java"
-    but not "javascript". Saturates at 1.0 once every must-have skill is present.
+    Saturates at 1.0 once every must-have skill is present.
     """
     needed = len(must_have_skills)
     if needed == 0:
         return 0.0
-    hits = sum(
-        1
-        for skill in must_have_skills
-        if re.search(rf"\b{re.escape(skill)}\b", text, flags=re.IGNORECASE)
-    )
-    return min(1.0, hits / needed)
+    return min(1.0, len(matched_skills(text, must_have_skills)) / needed)
 
 
 def _recency_score(job: Job, *, max_age_days: int, now: datetime) -> float:
@@ -313,4 +321,5 @@ __all__ = [
     "build_profile_vector",
     "embed_job",
     "score_job",
+    "matched_skills",
 ]
