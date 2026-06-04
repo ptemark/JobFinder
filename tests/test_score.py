@@ -9,13 +9,13 @@ once, then offline) since those properties are model-specific.
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from jobfinder.models import Job, LocationBucket, Seniority
+from jobfinder.models import Job, LocationBucket, ScoreBreakdown, Seniority
 from jobfinder.score import (
     _chunk_text,
     build_profile_vector,
@@ -23,8 +23,9 @@ from jobfinder.score import (
     extract_resume,
     load_model,
     render_targeting,
+    score_job,
 )
-from jobfinder.settings import load_profile
+from jobfinder.settings import Weights, load_profile
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 _PROFILE_PATH = _FIXTURES / "config" / "profile.yaml"
@@ -57,8 +58,18 @@ class _RecordingEncoder:
         return np.random.default_rng(seed).standard_normal(self.dim).astype(np.float32)
 
 
-def _make_job(*, title: str, description: str) -> Job:
-    now = datetime(2026, 6, 4, tzinfo=UTC)
+_NOW = datetime(2026, 6, 4, tzinfo=UTC)
+
+
+def _make_job(
+    *,
+    title: str,
+    description: str,
+    location_bucket: LocationBucket = LocationBucket.REMOTE,
+    seniority: Seniority = Seniority.SENIOR,
+    posted_at: datetime | None = _NOW,
+    date_unknown: bool = False,
+) -> Job:
     return Job(
         id="job1",
         source="greenhouse",
@@ -67,14 +78,14 @@ def _make_job(*, title: str, description: str) -> Job:
         title=title,
         description=description,
         location_raw="Remote",
-        is_remote=True,
-        location_bucket=LocationBucket.REMOTE,
-        seniority=Seniority.SENIOR,
+        is_remote=location_bucket == LocationBucket.REMOTE,
+        location_bucket=location_bucket,
+        seniority=seniority,
         url="https://example.com/job/1",
-        posted_at=now,
-        date_unknown=False,
-        first_seen_at=now,
-        last_seen_at=now,
+        posted_at=posted_at,
+        date_unknown=date_unknown,
+        first_seen_at=_NOW,
+        last_seen_at=_NOW,
     )
 
 
@@ -246,3 +257,227 @@ def test_load_model_caches_per_name(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert first is second
     assert constructed == ["tiny-test-model"]  # constructed once, then cached
+
+
+# --- T16: scoring math & weights (LLD §6.3–§6.4) ---
+
+# The default weights (config/weights.yaml.example). They happen to sum to 1.0,
+# so a separate test uses off-sum weights to prove the §6.4 normalization.
+_DEFAULT_WEIGHTS = Weights(semantic=0.35, skill=0.30, location=0.20, recency=0.15)
+
+# A unit vector reused where the semantic component is not under test; passing
+# the same array as profile and job vector yields cosine 1.0.
+_UNIT_VEC = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+
+
+def test_score_components_full_match() -> None:
+    profile = load_profile(_PROFILE_PATH)
+    job = _make_job(
+        title="Senior Backend Engineer",
+        description="Java, Kotlin, Python and AWS at scale.",
+        location_bucket=LocationBucket.REMOTE,
+        posted_at=_NOW,
+    )
+
+    sb = score_job(job, _UNIT_VEC, _UNIT_VEC, profile=profile, weights=_DEFAULT_WEIGHTS, now=_NOW)
+
+    assert sb.semantic == 1.0
+    assert sb.skill == 1.0  # all four must-have skills present
+    assert sb.location == 1.0
+    assert sb.recency == 1.0  # posted now → age 0
+    assert sb.final == 100.0
+
+
+def test_semantic_clamped_to_zero_for_opposed_vectors() -> None:
+    profile = load_profile(_PROFILE_PATH)
+    opposed = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+    job = _make_job(title="Backend Engineer", description="Java Kotlin Python AWS")
+
+    sb = score_job(job, _UNIT_VEC, opposed, profile=profile, weights=_DEFAULT_WEIGHTS, now=_NOW)
+
+    assert sb.semantic == 0.0  # cosine -1 clamped up to 0
+
+
+def test_skill_score_word_boundary_and_partial() -> None:
+    # "JavaScript" must not satisfy "java"; only "Python" is a real hit → 1 of 4.
+    profile = load_profile(_PROFILE_PATH)
+    job = _make_job(title="Engineer", description="We build with JavaScript and Python.")
+
+    sb = score_job(job, _UNIT_VEC, _UNIT_VEC, profile=profile, weights=_DEFAULT_WEIGHTS, now=_NOW)
+
+    assert sb.skill == 0.25
+
+
+@pytest.mark.parametrize(
+    ("bucket", "expected"),
+    [
+        (LocationBucket.REMOTE, 1.0),
+        (LocationBucket.VANCOUVER, 0.85),
+        (LocationBucket.TORONTO, 0.7),
+        (LocationBucket.OTHER_CANADA, 0.4),
+        (LocationBucket.OTHER, 0.0),
+    ],
+)
+def test_location_bonus_per_bucket(bucket: LocationBucket, expected: float) -> None:
+    profile = load_profile(_PROFILE_PATH)
+    job = _make_job(title="Backend Engineer", description="Java", location_bucket=bucket)
+
+    sb = score_job(job, _UNIT_VEC, _UNIT_VEC, profile=profile, weights=_DEFAULT_WEIGHTS, now=_NOW)
+
+    assert sb.location == expected
+
+
+def test_recency_decays_linearly_within_window() -> None:
+    profile = load_profile(_PROFILE_PATH)  # max_age_days 21
+    job = _make_job(
+        title="Backend Engineer", description="Java", posted_at=_NOW - timedelta(days=10)
+    )
+
+    sb = score_job(job, _UNIT_VEC, _UNIT_VEC, profile=profile, weights=_DEFAULT_WEIGHTS, now=_NOW)
+
+    assert sb.recency == pytest.approx(1.0 - 10 / 21)
+
+
+def test_recency_zero_at_cutoff() -> None:
+    profile = load_profile(_PROFILE_PATH)
+    job = _make_job(
+        title="Backend Engineer", description="Java", posted_at=_NOW - timedelta(days=21)
+    )
+
+    sb = score_job(job, _UNIT_VEC, _UNIT_VEC, profile=profile, weights=_DEFAULT_WEIGHTS, now=_NOW)
+
+    assert sb.recency == 0.0
+
+
+def test_recency_date_unknown_gets_fixed_score() -> None:
+    profile = load_profile(_PROFILE_PATH)
+    job = _make_job(
+        title="Backend Engineer", description="Java", posted_at=None, date_unknown=True
+    )
+
+    sb = score_job(job, _UNIT_VEC, _UNIT_VEC, profile=profile, weights=_DEFAULT_WEIGHTS, now=_NOW)
+
+    assert sb.recency == 0.3
+
+
+def test_final_is_weight_normalized_and_rounded() -> None:
+    profile = load_profile(_PROFILE_PATH)
+    job = _make_job(
+        title="Backend Engineer",
+        description="Java and AWS only.",  # skill 2 of 4 = 0.5
+        location_bucket=LocationBucket.TORONTO,  # 0.7
+        posted_at=_NOW - timedelta(days=10),  # recency 1 - 10/21
+    )
+
+    sb = score_job(job, _UNIT_VEC, _UNIT_VEC, profile=profile, weights=_DEFAULT_WEIGHTS, now=_NOW)
+
+    expected = round(
+        100 * (0.35 * 1.0 + 0.30 * 0.5 + 0.20 * 0.7 + 0.15 * (1 - 10 / 21)), 1
+    )
+    assert sb.skill == 0.5
+    assert sb.final == expected
+
+
+def test_final_normalizes_by_weight_sum() -> None:
+    # Weights summing to 2.0; a full-match job must still score 100, proving final
+    # is divided by the weight sum (LLD §6.4), not just the raw weighted sum.
+    profile = load_profile(_PROFILE_PATH)
+    weights = Weights(semantic=0.7, skill=0.6, location=0.4, recency=0.3)
+    job = _make_job(
+        title="Backend Engineer",
+        description="Java Kotlin Python AWS",
+        location_bucket=LocationBucket.REMOTE,
+        posted_at=_NOW,
+    )
+
+    sb = score_job(job, _UNIT_VEC, _UNIT_VEC, profile=profile, weights=weights, now=_NOW)
+
+    assert sb.final == 100.0
+
+
+def test_score_job_returns_full_breakdown() -> None:
+    profile = load_profile(_PROFILE_PATH)
+    job = _make_job(title="Backend Engineer", description="Java Kotlin Python AWS")
+
+    sb = score_job(job, _UNIT_VEC, _UNIT_VEC, profile=profile, weights=_DEFAULT_WEIGHTS, now=_NOW)
+
+    assert isinstance(sb, ScoreBreakdown)
+    assert sb.scored_at == _NOW
+    assert 0.0 <= sb.final <= 100.0
+
+
+def test_skill_weight_beats_higher_semantic_off_stack() -> None:
+    # The load-bearing skill-dominance check (tasks.md T16): an off-stack role
+    # with the *higher* semantic match still loses to a Java/AWS role because the
+    # skill weight steers the ranking. Vectors are hand-built so the comparison is
+    # deterministic and offline; both jobs share location + recency so only the
+    # semantic-vs-skill trade-off decides the order.
+    profile = load_profile(_PROFILE_PATH)
+    off_stack = _make_job(
+        title="Frontend Designer",
+        description="Craft delightful UI with React, Figma and CSS.",
+    )
+    off_stack_vec = np.array([1.0, 0.0, 0.0], dtype=np.float32)  # cosine 1.0
+    java_aws = _make_job(
+        title="Backend Engineer",
+        description="Build services in Java, Kotlin and Python on AWS.",
+    )
+    java_aws_vec = np.array([0.6, 0.8, 0.0], dtype=np.float32)  # cosine 0.6
+
+    off_sb = score_job(
+        off_stack, _UNIT_VEC, off_stack_vec, profile=profile, weights=_DEFAULT_WEIGHTS, now=_NOW
+    )
+    java_sb = score_job(
+        java_aws, _UNIT_VEC, java_aws_vec, profile=profile, weights=_DEFAULT_WEIGHTS, now=_NOW
+    )
+
+    assert off_sb.semantic > java_sb.semantic  # off-stack is the better semantic match
+    assert java_sb.skill > off_sb.skill
+    assert java_sb.final > off_sb.final  # skill weight flips the ranking
+
+
+def test_senior_remote_java_aws_outranks_junior_onsite_frontend(embed_model) -> None:
+    # The load-bearing ordering check (tasks.md T16 / spec M3 acceptance b), run
+    # end-to-end through the real model: a senior remote Java/AWS backend role must
+    # outrank a junior onsite frontend role.
+    profile = load_profile(_PROFILE_PATH)
+    resume_text = extract_resume(_FIXTURES / "resume.txt")
+    profile_vec = build_profile_vector(profile, resume_text, model=embed_model)
+
+    senior = _make_job(
+        title="Senior Backend Engineer",
+        description=(
+            "Design and operate distributed backend services in Java, Kotlin and "
+            "Python on AWS. Own reliability, scaling and on-call for core systems."
+        ),
+        location_bucket=LocationBucket.REMOTE,
+        seniority=Seniority.SENIOR,
+    )
+    junior = _make_job(
+        title="Junior Frontend Developer",
+        description=(
+            "Entry-level role building UI components with React, HTML and CSS. "
+            "Focus on visual design and accessibility in the browser."
+        ),
+        location_bucket=LocationBucket.OTHER,
+        seniority=Seniority.JUNIOR,
+    )
+
+    senior_sb = score_job(
+        senior,
+        profile_vec,
+        embed_job(senior, model=embed_model),
+        profile=profile,
+        weights=_DEFAULT_WEIGHTS,
+        now=_NOW,
+    )
+    junior_sb = score_job(
+        junior,
+        profile_vec,
+        embed_job(junior, model=embed_model),
+        profile=profile,
+        weights=_DEFAULT_WEIGHTS,
+        now=_NOW,
+    )
+
+    assert senior_sb.final > junior_sb.final

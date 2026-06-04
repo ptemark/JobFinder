@@ -15,16 +15,21 @@ cheap and never loads torch until an embedding is actually requested.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 
+from .models import LocationBucket, ScoreBreakdown
+
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from numpy.typing import NDArray
 
     from .models import Job
-    from .settings import Profile
+    from .settings import Profile, Weights
 
 # Supported résumé formats, dispatched on the lowercased file suffix (LLD §6.5).
 _TEXT_SUFFIXES = frozenset({".txt", ".md"})
@@ -197,6 +202,109 @@ def embed_job(job: Job, *, model: Encoder) -> NDArray[np.float32]:
     return _l2_normalize(vec)
 
 
+# Location bonus by bucket (LLD §6.3): remote > vancouver > toronto > other_canada,
+# anything outside Canada/remote scores zero (those are filtered out anyway).
+_LOCATION_BONUS: dict[LocationBucket, float] = {
+    LocationBucket.REMOTE: 1.0,
+    LocationBucket.VANCOUVER: 0.85,
+    LocationBucket.TORONTO: 0.7,
+    LocationBucket.OTHER_CANADA: 0.4,
+    LocationBucket.OTHER: 0.0,
+}
+
+# Recency given to a posting whose date couldn't be parsed (LLD §6.3). It sits
+# below a fresh dated posting but above a near-stale one, so date_unknown jobs are
+# still surfaced and ranked rather than silently lost (spec §7).
+_DATE_UNKNOWN_RECENCY = 0.3  # LLD §6.3
+
+
+def _clamp01(value: float) -> float:
+    """Clamp a float to the closed unit interval [0, 1]."""
+    return max(0.0, min(1.0, value))
+
+
+def _cosine(a: NDArray[np.float32], b: NDArray[np.float32]) -> float:
+    """Cosine similarity of two vectors; 0.0 if either has zero magnitude."""
+    denom = float(np.linalg.norm(a)) * float(np.linalg.norm(b))
+    if denom == 0.0:
+        return 0.0
+    return float(np.dot(a, b) / denom)
+
+
+def _skill_score(text: str, must_have_skills: list[str]) -> float:
+    """Fraction of must-have skills present in ``text`` (LLD §6.3).
+
+    Matches are word-boundary and case-insensitive, so ``java`` matches "Java"
+    but not "javascript". Saturates at 1.0 once every must-have skill is present.
+    """
+    needed = len(must_have_skills)
+    if needed == 0:
+        return 0.0
+    hits = sum(
+        1
+        for skill in must_have_skills
+        if re.search(rf"\b{re.escape(skill)}\b", text, flags=re.IGNORECASE)
+    )
+    return min(1.0, hits / needed)
+
+
+def _recency_score(job: Job, *, max_age_days: int, now: datetime) -> float:
+    """Linear recency decay over the 0..max_age_days window (LLD §6.3).
+
+    Newest ≈ 1.0, a posting at the cutoff ≈ 0.0; ``date_unknown`` postings get a
+    fixed mid-low score so they still rank.
+    """
+    if job.date_unknown or job.posted_at is None:
+        return _DATE_UNKNOWN_RECENCY
+    age_days = (now - job.posted_at).days
+    return _clamp01(1.0 - age_days / max_age_days)
+
+
+def score_job(
+    job: Job,
+    profile_vec: NDArray[np.float32],
+    job_vec: NDArray[np.float32],
+    *,
+    profile: Profile,
+    weights: Weights,
+    now: datetime,
+) -> ScoreBreakdown:
+    """Compute the weighted match score and its component breakdown (LLD §6.3–§6.4).
+
+    ``profile_vec``/``job_vec`` are the L2-normalized embeddings from
+    :func:`build_profile_vector`/:func:`embed_job`. They are passed in rather than
+    re-embedded here so this function is pure and model-free — which makes the
+    load-bearing ranking test (tasks.md T16) deterministic and offline. (The §8
+    pipeline pseudocode abbreviates embedding and scoring into one call; they are
+    separated here for that testability.)
+
+    The four components (semantic cosine clamped to [0,1], skill fraction,
+    location bonus, recency decay) are combined as the weight-normalized sum from
+    LLD §6.4 and scaled to a 0–100 ``final``.
+    """
+    semantic = _clamp01(_cosine(profile_vec, job_vec))
+    skill = _skill_score(f"{job.title}\n{job.description}", profile.must_have_skills)
+    location = _LOCATION_BONUS[job.location_bucket]
+    recency = _recency_score(job, max_age_days=profile.max_age_days, now=now)
+
+    # Denominator is guaranteed > 0 by the Weights validator (settings.py).
+    denom = weights.semantic + weights.skill + weights.location + weights.recency
+    final01 = (
+        weights.semantic * semantic
+        + weights.skill * skill
+        + weights.location * location
+        + weights.recency * recency
+    ) / denom
+    return ScoreBreakdown(
+        final=round(100.0 * final01, 1),
+        semantic=semantic,
+        skill=skill,
+        location=location,
+        recency=recency,
+        scored_at=now,
+    )
+
+
 __all__ = [
     "Encoder",
     "extract_resume",
@@ -204,4 +312,5 @@ __all__ = [
     "render_targeting",
     "build_profile_vector",
     "embed_job",
+    "score_job",
 ]

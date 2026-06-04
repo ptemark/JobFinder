@@ -190,7 +190,7 @@ Legend: **[P0]** must-have for a working product · **[P1]** completeness · **[
   L2-normalize math) — both from the LLD §14 target set, pulled in by the first task to
   embed text.
 
-### T16 — Scoring math & weights  **[P0]**
+### T16 — Scoring math & weights  **[P0]**  `[~] In Progress`
 - **Depends on:** T15, T13
 - **Files:** `score.py` (`score_job`), `config/weights.yaml(.example)`, `tests/test_score.py`
 - **Do:** Implement components + weighted final per LLD §6.3–§6.4: semantic cosine
