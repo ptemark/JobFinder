@@ -155,7 +155,16 @@ class LeverSource:
             return  # stale: excluded before normalize/embed (LLD §3.4)
 
         result.kept_after_recency += 1
-        result.raw.append(RawPosting(source=self.name, source_id=str(raw_id), payload=posting))
+        result.raw.append(
+            RawPosting(
+                source=self.name,
+                source_id=str(raw_id),
+                payload=posting,
+                # Lever payloads carry no company name; the configured site name
+                # (or its token) is the only company source (LLD §3.4 field map).
+                company_hint=company.name or company.token,
+            )
+        )
 
 
 def build_lever_source(settings: Settings) -> LeverSource:

@@ -126,7 +126,16 @@ class GreenhouseSource:
             return  # stale: excluded before normalize/embed (LLD §3.3)
 
         result.kept_after_recency += 1
-        result.raw.append(RawPosting(source=self.name, source_id=str(raw_id), payload=job))
+        result.raw.append(
+            RawPosting(
+                source=self.name,
+                source_id=str(raw_id),
+                payload=job,
+                # company_name is usually in the payload; the configured name/token
+                # is the documented fallback for normalize (LLD §3.3 field map).
+                company_hint=company.name or company.token,
+            )
+        )
 
 
 def build_greenhouse_source(settings: Settings) -> GreenhouseSource:

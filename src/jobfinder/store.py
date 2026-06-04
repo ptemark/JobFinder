@@ -176,6 +176,15 @@ def upsert_job(conn: sqlite3.Connection, job: Job) -> None:
     conn.commit()
 
 
+def get_job(conn: sqlite3.Connection, job_id: str) -> sqlite3.Row | None:
+    """Return the stored ``jobs`` row for ``job_id``, or ``None`` if absent.
+
+    The pipeline reads ``content_hash`` and ``embedding`` from this row to decide
+    whether a re-seen posting needs re-embedding (LLD §6.4 / §8).
+    """
+    return conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+
+
 def _now(now: datetime | None) -> datetime:
     """Resolve an injectable ``now`` to a concrete UTC datetime.
 
@@ -350,6 +359,7 @@ __all__ = [
     "connect",
     "init_db",
     "upsert_job",
+    "get_job",
     "save_score",
     "set_status",
     "start_run",

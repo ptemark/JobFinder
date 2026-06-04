@@ -68,6 +68,10 @@ class RawPosting:
     source: str
     source_id: str
     payload: dict  # original provider object, kept verbatim for debugging
+    # The company name the configured board belongs to, attached by the adapter
+    # at fetch time. Some providers (Lever) carry no company in the payload, so
+    # the pipeline threads this hint into ``normalize`` (LLD §3.4, §8).
+    company_hint: str | None = None
 
 
 @dataclass
