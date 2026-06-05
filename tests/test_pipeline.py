@@ -26,7 +26,7 @@ from jobfinder.sources.base import SourceResult
 from jobfinder.sources.greenhouse import GreenhouseSource
 from jobfinder.sources.http import HttpClient
 from jobfinder.sources.lever import LeverSource
-from jobfinder.store import connect
+from jobfinder.store import connect, init_db, start_run
 
 FIXTURES = Path(__file__).parent / "fixtures"
 # Same reference instant as the source tests: the fresh fixtures sit within the
@@ -280,3 +280,36 @@ def test_run_poll_prunes_jobs_not_seen_within_retention(tmp_path: Path, embed_mo
 
     assert summary.pruned == 2
     assert _rows(settings.db_path) == []
+
+
+def test_run_poll_finishes_a_reserved_run_id(tmp_path: Path, embed_model) -> None:
+    # The dashboard's POST /api/poll reserves a run row, then spawns the poll to
+    # finish that same row (LLD §9.1) — so a passed run_id must be reused, not
+    # duplicated.
+    base = _make_base_dir(tmp_path)
+    settings = Settings(base_dir=base)
+
+    conn = connect(settings.db_path)
+    try:
+        init_db(conn)
+        reserved = start_run(conn, now=_NOW)
+    finally:
+        conn.close()
+
+    summary = run_poll(
+        settings,
+        sources=[_ListSource("greenhouse", [])],
+        model=embed_model,
+        now=_NEXT_DAY,
+        run_id=reserved,
+    )
+
+    assert summary.run_id == reserved
+    conn = connect(settings.db_path)
+    try:
+        runs = conn.execute("SELECT id, finished_at FROM poll_runs ORDER BY id").fetchall()
+    finally:
+        conn.close()
+    # Exactly one run row — the reserved one — and it is now finished.
+    assert [r["id"] for r in runs] == [reserved]
+    assert runs[0]["finished_at"] == _NEXT_DAY.isoformat()

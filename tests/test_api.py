@@ -10,6 +10,7 @@ flag, and the latest-run summary.
 from __future__ import annotations
 
 import shutil
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -310,3 +311,61 @@ def test_runs_latest_404_when_no_runs(tmp_path: Path) -> None:
     # create_app initializes the schema but seeds no runs.
     client = TestClient(create_app(settings, now=lambda: _NOW))
     assert client.get("/api/runs/latest").status_code == 404
+
+
+# --- Poll trigger (T19) -----------------------------------------------------
+
+
+def test_poll_returns_202_reserves_run_and_spawns(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The spawn is patched so no pipeline subprocess (and no model/network) runs.
+    calls: list[tuple[Settings, int]] = []
+    monkeypatch.setattr(
+        "jobfinder.web.api.spawn_poll",
+        lambda settings, run_id: calls.append((settings, run_id)),
+    )
+
+    resp = client.post("/api/poll")
+    assert resp.status_code == 202
+    run_id = resp.json()["run_id"]
+    assert isinstance(run_id, int)
+
+    # The endpoint reserved exactly that run row and handed it to the spawn.
+    assert len(calls) == 1
+    spawned_settings, spawned_run_id = calls[0]
+    assert spawned_run_id == run_id
+    assert spawned_settings.base_dir == tmp_path
+
+    # The reserved run is open (not yet finished), so it is not the "latest" run.
+    conn = connect(spawned_settings.db_path)
+    try:
+        row = conn.execute("SELECT finished_at FROM poll_runs WHERE id = ?", (run_id,)).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["finished_at"] is None
+
+
+def test_spawn_poll_invokes_pipeline_subprocess(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Patch Popen so the helper's command/env is asserted without launching a process.
+    from jobfinder.web import api
+
+    captured: dict[str, object] = {}
+
+    class _FakePopen:
+        def __init__(self, argv: list[str], **kwargs: object) -> None:
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(api.subprocess, "Popen", _FakePopen)
+    settings = Settings(base_dir=tmp_path)
+    api.spawn_poll(settings, 42)
+
+    argv = captured["argv"]
+    assert argv[0] == sys.executable
+    assert argv[1:] == ["-m", "jobfinder.pipeline", "--run-id", "42"]
+    env = captured["kwargs"]["env"]
+    assert env["JOBFINDER_base_dir"] == str(tmp_path)

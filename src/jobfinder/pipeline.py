@@ -18,6 +18,7 @@ rows in place rather than duplicating them (HLD §4.4).
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import logging
 from dataclasses import dataclass, field
@@ -33,7 +34,7 @@ from jobfinder.score import (
     load_model,
     score_job,
 )
-from jobfinder.settings import load_profile, load_weights
+from jobfinder.settings import Settings, load_profile, load_weights
 from jobfinder.sources.base import build_sources
 from jobfinder.store import (
     connect,
@@ -53,7 +54,7 @@ if TYPE_CHECKING:
 
     from jobfinder.models import Job, RawPosting, ScoreBreakdown
     from jobfinder.score import Encoder
-    from jobfinder.settings import Profile, Settings, Weights
+    from jobfinder.settings import Profile, Weights
     from jobfinder.sources.base import Source
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,7 @@ def run_poll(
     sources: list[Source] | None = None,
     model: Encoder | None = None,
     now: datetime | None = None,
+    run_id: int | None = None,
 ) -> RunSummary:
     """Run one poll end-to-end and return its :class:`RunSummary` (LLD §8).
 
@@ -117,6 +119,10 @@ def run_poll(
         now: the poll timestamp, injected for deterministic tests; defaults to
             the current UTC time. A single instant is used for recency, filtering,
             and the run/seen stamps so the poll is internally consistent.
+        run_id: an already-reserved ``poll_runs`` id to finish. The dashboard's
+            ``POST /api/poll`` opens the run row, returns its id, then spawns this
+            poll to complete that same row (LLD §9.1). Defaults to ``None``, in
+            which case the poll opens its own run (the cron/CLI path).
     """
     now = now if now is not None else datetime.now(UTC)
     profile = load_profile(settings.config_dir / "profile.yaml")
@@ -134,7 +140,7 @@ def run_poll(
     conn = connect(settings.db_path)
     try:
         init_db(conn)
-        run_id = start_run(conn, now=now)
+        run_id = start_run(conn, now=now) if run_id is None else run_id
         per_source: dict[str, SourceSummary] = {}
         for src in sources:
             per_source[src.name] = _poll_source(
@@ -262,4 +268,32 @@ def _needs_embedding(existing: sqlite3.Row | None, content_hash: str) -> bool:
     return existing["content_hash"] != content_hash or existing["embedding"] is None
 
 
-__all__ = ["RunSummary", "SourceSummary", "run_poll"]
+def main(argv: list[str] | None = None) -> None:
+    """Run one poll from the command line.
+
+    This is the spawnable entry point the dashboard's ``POST /api/poll`` uses
+    (``python -m jobfinder.pipeline --run-id N``) so the heavy poll runs
+    out-of-process and the request returns immediately (LLD §9.1). ``--run-id``
+    finishes a run row the caller already opened; omitting it opens a fresh run
+    (the bare cron invocation). Settings come from the environment so the child
+    shares the parent's paths.
+    """
+    parser = argparse.ArgumentParser(
+        prog="jobfinder.pipeline", description="Run one Job Finder poll."
+    )
+    parser.add_argument(
+        "--run-id",
+        type=int,
+        default=None,
+        help="finish an already-reserved poll_runs id instead of opening a new run",
+    )
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO)
+    run_poll(Settings(), run_id=args.run_id)
+
+
+__all__ = ["RunSummary", "SourceSummary", "main", "run_poll"]
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()

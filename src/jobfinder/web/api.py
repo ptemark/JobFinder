@@ -1,16 +1,20 @@
 """Dashboard JSON API routers (LLD §9.1).
 
-Read-only job browsing plus per-job status writes. Every route opens a
-short-lived SQLite connection (the :func:`get_conn` dependency) so the dashboard
-never holds the DB open across the poll's writes — ``busy_timeout`` (LLD §7.1)
-covers the brief overlap. Rows from the store layer are mapped to the wire
-schemas here, where the request clock and the "new since last poll" threshold are
-applied. The poll-trigger endpoint (``POST /api/poll``) lands in T19.
+Read-only job browsing plus per-job status writes, and a manual poll trigger.
+Every route opens a short-lived SQLite connection (the :func:`get_conn`
+dependency) so the dashboard never holds the DB open across the poll's writes —
+``busy_timeout`` (LLD §7.1) covers the brief overlap. Rows from the store layer
+are mapped to the wire schemas here, where the request clock and the "new since
+last poll" threshold are applied. ``POST /api/poll`` reserves a run row and spawns
+the pipeline out-of-process (LLD §9.1) so a slow source never blocks the request.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
@@ -27,11 +31,13 @@ from jobfinder.store import (
     previous_run_finished_at,
     query_jobs,
     set_status,
+    start_run,
 )
 from jobfinder.web.schemas import (
     JobCard,
     JobDetail,
     JobListResponse,
+    PollResponse,
     RunSummaryResponse,
     StatusResponse,
     StatusUpdate,
@@ -40,6 +46,8 @@ from jobfinder.web.schemas import (
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Iterator
+
+    from jobfinder.settings import Settings
 
 router = APIRouter(prefix="/api")
 
@@ -51,6 +59,27 @@ def get_conn(request: Request) -> Iterator[sqlite3.Connection]:
         yield conn
     finally:
         conn.close()
+
+
+def spawn_poll(settings: Settings, run_id: int) -> None:
+    """Spawn the pipeline as a detached, non-blocking subprocess (LLD §9.1).
+
+    The "Poll now" button must return immediately, so the heavy poll (model load,
+    network fetch) runs out-of-process: a slow or hanging source can never block
+    the dashboard. The child inherits the environment plus an explicit
+    ``JOBFINDER_base_dir`` so it resolves the same DB/config the server uses, and
+    finishes the ``run_id`` this request already reserved. ``start_new_session``
+    detaches it so it outlives a server restart (POSIX; ignored elsewhere).
+    """
+    env = {**os.environ, "JOBFINDER_base_dir": str(settings.base_dir)}
+    # Fixed argv, no shell, no user-supplied input — only the integer run_id.
+    subprocess.Popen(
+        [sys.executable, "-m", "jobfinder.pipeline", "--run-id", str(run_id)],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -185,6 +214,24 @@ def update_status(
     return StatusResponse(ok=True)
 
 
+@router.post("/poll", status_code=202, response_model=PollResponse)
+def trigger_poll(
+    request: Request,
+    conn: sqlite3.Connection = Depends(get_conn),
+) -> PollResponse:
+    """Trigger a poll and return its reserved run id (LLD §9.1), non-blocking.
+
+    The run row is opened here so the dashboard gets a ``run_id`` to watch via
+    ``GET /api/runs/latest`` straight away; the spawned pipeline finishes that
+    same row. This process never touches the network — the fetch happens in the
+    child subprocess (Cost & Safety §1/§5).
+    """
+    settings = request.app.state.settings
+    run_id = start_run(conn, now=request.app.state.clock())
+    spawn_poll(settings, run_id)
+    return PollResponse(run_id=run_id)
+
+
 @router.get("/runs/latest", response_model=RunSummaryResponse)
 def runs_latest(conn: sqlite3.Connection = Depends(get_conn)) -> RunSummaryResponse:
     """The most recent finished poll-run summary (LLD §9.1). 404 before any poll."""
@@ -200,4 +247,4 @@ def runs_latest(conn: sqlite3.Connection = Depends(get_conn)) -> RunSummaryRespo
     )
 
 
-__all__ = ["router"]
+__all__ = ["router", "spawn_poll"]

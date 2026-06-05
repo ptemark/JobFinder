@@ -71,6 +71,13 @@ class RunSummaryResponse(BaseModel):
     per_source: dict
 
 
+class PollResponse(BaseModel):
+    """Acknowledgement for ``POST /api/poll`` — the reserved run id the spawned
+    pipeline will finish, which the dashboard can watch via ``/api/runs/latest``."""
+
+    run_id: int
+
+
 __all__ = [
     "JobCard",
     "JobListResponse",
@@ -78,4 +85,5 @@ __all__ = [
     "StatusUpdate",
     "StatusResponse",
     "RunSummaryResponse",
+    "PollResponse",
 ]
