@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Job Finder</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1 class="topbar__title">Job Finder</h1>
+      <div class="topbar__actions">
+        <span id="run-status" class="run-status" aria-live="polite"></span>
+        <button id="poll-now" type="button" class="btn btn--primary">Poll now</button>
+      </div>
+    </header>
+
+    <!-- API/poll errors surface here; never swallowed (RALPH dashboard rules). -->
+    <div id="alert" class="alert" role="alert" hidden></div>
+
+    <main class="layout">
+      <aside class="sidebar" aria-label="Filters">
+        <form id="filters" class="filters">
+          <fieldset class="filters__group">
+            <legend>Sort</legend>
+            <label for="f-sort">Order by</label>
+            <select id="f-sort" name="sort">
+              <option value="best">Best match</option>
+              <option value="newest">Newest</option>
+            </select>
+          </fieldset>
+
+          <fieldset class="filters__group">
+            <legend>Filters</legend>
+
+            <label for="f-bucket">Location</label>
+            <select id="f-bucket" name="bucket">
+              <option value="">Any</option>
+              <option value="remote">Remote</option>
+              <option value="vancouver">Vancouver</option>
+              <option value="toronto">Toronto</option>
+              <option value="other_canada">Other Canada</option>
+              <option value="other">Other</option>
+            </select>
+
+            <label for="f-source">Source</label>
+            <select id="f-source" name="source">
+              <option value="">Any</option>
+              <option value="greenhouse">Greenhouse</option>
+              <option value="lever">Lever</option>
+              <option value="ashby">Ashby</option>
+              <option value="adzuna">Adzuna</option>
+            </select>
+
+            <label for="f-seniority">Seniority</label>
+            <select id="f-seniority" name="seniority">
+              <option value="">Any</option>
+              <option value="mid">Mid</option>
+              <option value="senior">Senior</option>
+              <option value="staff">Staff</option>
+              <option value="junior">Junior</option>
+              <option value="unknown">Unknown</option>
+            </select>
+
+            <label for="f-status">Status</label>
+            <select id="f-status" name="status">
+              <option value="">Any</option>
+              <option value="new">New</option>
+              <option value="interested">Interested</option>
+              <option value="applied">Applied</option>
+              <option value="dismissed">Dismissed</option>
+            </select>
+
+            <label for="f-min-score">Minimum score</label>
+            <input id="f-min-score" name="min_score" type="number" min="0" max="100" step="1" />
+
+            <label for="f-max-age">Max age (days)</label>
+            <input id="f-max-age" name="max_age_days" type="number" min="1" step="1" />
+
+            <label class="filters__check">
+              <input id="f-include-ineligible" name="include_ineligible" type="checkbox" />
+              Show ineligible jobs
+            </label>
+          </fieldset>
+
+          <button type="submit" class="btn btn--primary filters__apply">Apply filters</button>
+        </form>
+      </aside>
+
+      <section class="results" aria-label="Job results" aria-busy="false">
+        <p id="results-summary" class="results__summary" aria-live="polite"></p>
+        <ul id="job-list" class="job-list"></ul>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

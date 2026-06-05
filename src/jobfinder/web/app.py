@@ -1,7 +1,7 @@
 """FastAPI application factory for the dashboard (LLD §9).
 
-:func:`create_app` wires the JSON API router and (once T20 lands) the static SPA,
-and stashes the resolved settings, the validated targeting profile, and an
+:func:`create_app` wires the JSON API router and the static SPA, and stashes the
+resolved settings, the validated targeting profile, and an
 injectable clock on ``app.state`` for the routes to read. The schema is created
 on startup so serving before the first poll yields an empty list rather than an
 error. Binding to loopback is the server's job (uvicorn ``host=127.0.0.1``, wired
@@ -25,8 +25,8 @@ from jobfinder.web.api import router
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-# The static SPA lives here (built in T20). Mounting is guarded on existence so
-# the API is fully usable before the frontend assets land.
+# The static SPA (index.html + app.js + styles.css, LLD §9.3). Mounting is
+# guarded on existence so the API stays usable even if the assets are absent.
 _STATIC_DIR = Path(__file__).parent / "static"
 
 

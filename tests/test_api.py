@@ -369,3 +369,23 @@ def test_spawn_poll_invokes_pipeline_subprocess(
     assert argv[1:] == ["-m", "jobfinder.pipeline", "--run-id", "42"]
     env = captured["kwargs"]["env"]
     assert env["JOBFINDER_base_dir"] == str(tmp_path)
+
+
+# --- Static SPA (T20) -------------------------------------------------------
+
+
+def test_serves_static_spa_index(client: TestClient) -> None:
+    # The static assets are mounted at "/" (html=True), so the root serves the
+    # dashboard shell and the API routes still resolve under /api.
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    assert "Job Finder" in resp.text
+
+
+def test_serves_static_assets(client: TestClient) -> None:
+    js = client.get("/app.js")
+    assert js.status_code == 200
+    assert "/api/jobs" in js.text  # the client talks to the local API
+    css = client.get("/styles.css")
+    assert css.status_code == 200
