@@ -2,11 +2,11 @@
 
 Importing this package imports each concrete adapter so it self-registers in the
 :data:`~jobfinder.sources.base.SOURCES` registry at import time (LLD §3.1).
-Further adapters (Ashby, Adzuna) are added by T21/T22.
+The Adzuna adapter is added by T22.
 """
 
-from jobfinder.sources import greenhouse, lever
+from jobfinder.sources import ashby, greenhouse, lever
 
 # Re-exported so the imports are not flagged unused: importing them is what
 # registers the adapters in the SOURCES registry.
-__all__ = ["greenhouse", "lever"]
+__all__ = ["ashby", "greenhouse", "lever"]

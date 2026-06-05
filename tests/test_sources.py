@@ -15,9 +15,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from jobfinder.models import RawPosting
+from jobfinder.models import LocationBucket, RawPosting
 from jobfinder.normalize import normalize
 from jobfinder.settings import CompanyEntry, Settings
+from jobfinder.sources.ashby import AshbySource
 from jobfinder.sources.base import (
     Source,
     SourceFactory,
@@ -254,6 +255,132 @@ def test_greenhouse_unexpected_shape_noted(tmp_path: Path) -> None:
     bad = httpx.Response(200, json={"unexpected": True})
     client = _greenhouse_client(tmp_path, {"acme": bad})
     source = GreenhouseSource(
+        companies=[CompanyEntry(token="acme")],
+        client=client,
+        now=lambda: _NOW,
+    )
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert result.raw == []
+    assert result.fetched == 0
+    assert any("unexpected payload shape" in note for note in result.errors)
+
+
+# --- Ashby adapter (T21) ----------------------------------------------------
+
+
+def _ashby_handler(boards: dict[str, httpx.Response]):
+    """A MockTransport handler mapping a board token to a canned response."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        token = request.url.path.split("/")[3]  # /posting-api/job-board/{token}
+        if token not in boards:
+            return httpx.Response(404, json={"error": "not found"})
+        return boards[token]
+
+    return handler
+
+
+def _ashby_client(tmp_path: Path, boards: dict[str, httpx.Response]) -> HttpClient:
+    return HttpClient(
+        cache_dir=tmp_path / "cache",
+        throttle_s=0.0,
+        transport=httpx.MockTransport(_ashby_handler(boards)),
+        sleep=lambda _dt: None,
+        rng=random.Random(0),
+    )
+
+
+def _ashby_fixture_response() -> httpx.Response:
+    body = (FIXTURES / "ashby_jobs.json").read_text(encoding="utf-8")
+    return httpx.Response(200, json=json.loads(body))
+
+
+def test_ashby_fetch_parses_fixture(tmp_path: Path) -> None:
+    client = _ashby_client(tmp_path, {"acme": _ashby_fixture_response()})
+    source = AshbySource(
+        companies=[CompanyEntry(token="acme", name="Acme")],
+        client=client,
+        now=lambda: _NOW,
+    )
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert result.source == "ashby"
+    assert all(isinstance(rp, RawPosting) for rp in result.raw)
+    assert all(rp.source == "ashby" for rp in result.raw)
+    # 4 postings returned by the provider; the id-less one is skipped+noted.
+    assert result.fetched == 4
+    assert any("no id" in note for note in result.errors)
+
+
+def test_ashby_recency_prefilter_drops_stale(tmp_path: Path) -> None:
+    client = _ashby_client(tmp_path, {"acme": _ashby_fixture_response()})
+    source = AshbySource(
+        companies=[CompanyEntry(token="acme", name="Acme")],
+        client=client,
+        now=lambda: _NOW,
+    )
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    kept_ids = {rp.source_id for rp in result.raw}
+    # Fresh (ash-1001) and date-unknown (ash-1003) survive; stale (ash-1002,
+    # whose only date is a January updatedAt) drops.
+    assert kept_ids == {"ash-1001", "ash-1003"}
+    assert result.kept_after_recency == 2
+
+
+def test_ashby_remote_workplace_type_sets_is_remote(tmp_path: Path) -> None:
+    """``workplaceType == "Remote"`` is the strong remote signal (LLD §3.5);
+    the recency-filtered RawPostings also feed normalize cleanly (LLD §4)."""
+    client = _ashby_client(tmp_path, {"acme": _ashby_fixture_response()})
+    source = AshbySource(
+        companies=[CompanyEntry(token="acme", name="Acme")],
+        client=client,
+        now=lambda: _NOW,
+    )
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+    by_id = {rp.source_id: rp for rp in result.raw}
+
+    fresh = normalize(by_id["ash-1001"], company_hint="Acme", now=_NOW)
+    assert fresh.company == "Acme"  # supplied hint, not in payload
+    assert fresh.title == "Senior Backend Engineer"
+    assert fresh.is_remote is True  # workplaceType == "Remote"
+    assert fresh.location_bucket is LocationBucket.REMOTE
+    assert fresh.description == "Build backend services in Java and AWS."  # descriptionPlain
+    assert fresh.url == "https://jobs.ashbyhq.com/acme/ash-1001"
+    assert fresh.posted_at is not None  # publishedAt parsed
+    assert fresh.date_unknown is False
+
+    undated = normalize(by_id["ash-1003"], company_hint="Acme", now=_NOW)
+    assert undated.is_remote is False  # workplaceType == "Hybrid"
+    assert undated.date_unknown is True  # both publishedAt/updatedAt null
+    assert undated.description == "Python services team."  # descriptionHtml stripped
+
+
+def test_ashby_board_error_is_isolated(tmp_path: Path) -> None:
+    """One board 404ing is recorded but never loses the healthy board's jobs."""
+    client = _ashby_client(tmp_path, {"acme": _ashby_fixture_response()})  # "boom" -> 404
+    source = AshbySource(
+        companies=[CompanyEntry(token="boom"), CompanyEntry(token="acme")],
+        client=client,
+        now=lambda: _NOW,
+    )
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert {rp.source_id for rp in result.raw} == {"ash-1001", "ash-1003"}
+    assert any("boom" in note and "fetch failed" in note for note in result.errors)
+
+
+def test_ashby_unexpected_shape_noted(tmp_path: Path) -> None:
+    """A payload without a jobs list is noted, not fatal."""
+    bad = httpx.Response(200, json={"unexpected": True})
+    client = _ashby_client(tmp_path, {"acme": bad})
+    source = AshbySource(
         companies=[CompanyEntry(token="acme")],
         client=client,
         now=lambda: _NOW,

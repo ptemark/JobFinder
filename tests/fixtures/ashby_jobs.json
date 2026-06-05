@@ -1,0 +1,43 @@
+{
+  "jobs": [
+    {
+      "id": "ash-1001",
+      "title": "Senior Backend Engineer",
+      "publishedAt": "2026-05-29T16:00:00+00:00",
+      "updatedAt": "2026-05-31T16:00:00+00:00",
+      "location": "Canada",
+      "workplaceType": "Remote",
+      "descriptionPlain": "Build backend services in Java and AWS.",
+      "descriptionHtml": "<p>Build backend services in <strong>Java</strong> and AWS.</p>",
+      "jobUrl": "https://jobs.ashbyhq.com/acme/ash-1001",
+      "applyUrl": "https://jobs.ashbyhq.com/acme/ash-1001/application",
+      "compensation": {"scrapeableCompensationSalarySummary": "$160K - $200K CAD"}
+    },
+    {
+      "id": "ash-1002",
+      "title": "Staff Software Engineer, Platform",
+      "publishedAt": null,
+      "updatedAt": "2026-01-04T09:00:00-05:00",
+      "location": "Toronto, ON",
+      "workplaceType": "OnSite",
+      "descriptionPlain": "Lead platform work.",
+      "jobUrl": "https://jobs.ashbyhq.com/acme/ash-1002"
+    },
+    {
+      "id": "ash-1003",
+      "title": "Backend Developer",
+      "publishedAt": null,
+      "updatedAt": null,
+      "location": "Vancouver, BC",
+      "workplaceType": "Hybrid",
+      "descriptionHtml": "<p>Python services team.</p>",
+      "jobUrl": "https://jobs.ashbyhq.com/acme/ash-1003"
+    },
+    {
+      "title": "Posting With No Id",
+      "publishedAt": "2026-05-30T00:00:00+00:00",
+      "location": "Canada",
+      "workplaceType": "Remote"
+    }
+  ]
+}

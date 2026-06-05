@@ -251,11 +251,41 @@ def _extract_lever(payload: dict, company_hint: str | None) -> _Fields:
     )
 
 
+def ashby_posted_value(payload: dict) -> str | int | float | None:
+    """Return Ashby's posting timestamp, preferring ``publishedAt`` (LLD §3.5).
+
+    Ashby exposes both ``publishedAt`` and ``updatedAt`` as ISO8601 strings; the
+    publish date is the canonical "posted" time, with the update date as the
+    fallback. Shared by the adapter's recency pre-filter and :func:`normalize` so
+    the date selection is not duplicated.
+    """
+    return payload.get("publishedAt") or payload.get("updatedAt")
+
+
+def _extract_ashby(payload: dict, company_hint: str | None) -> _Fields:
+    """Map an Ashby posting-API object to common fields (LLD §3.5)."""
+    # Prefer the plain-text body, falling back to stripping the HTML one.
+    description = payload.get("descriptionPlain") or html_to_text(
+        payload.get("descriptionHtml") or ""
+    )
+    return _Fields(
+        title=payload.get("title") or "",
+        description=description,
+        company=company_hint or "",  # Ashby payloads carry no company name
+        location_raw=payload.get("location") or "",
+        # ``workplaceType == "Remote"`` is a strong, explicit remote signal.
+        is_remote=payload.get("workplaceType") == "Remote",
+        url=payload.get("jobUrl") or "",
+        posted_at=parse_date(ashby_posted_value(payload), "ashby"),
+    )
+
+
 # Source name -> field extractor. Each adapter's payload shape is mapped here;
-# Ashby/Adzuna extractors land with their adapter tasks (T21/T22).
+# the Adzuna extractor lands with its adapter task (T22).
 _EXTRACTORS = {
     "greenhouse": _extract_greenhouse,
     "lever": _extract_lever,
+    "ashby": _extract_ashby,
 }
 
 
@@ -294,6 +324,7 @@ def normalize(raw: RawPosting, *, company_hint: str | None, now: datetime) -> Jo
 
 __all__ = [
     "EPOCH_MS_SOURCES",
+    "ashby_posted_value",
     "bucket_location",
     "html_to_text",
     "infer_seniority",
