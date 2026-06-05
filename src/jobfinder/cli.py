@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, Annotated, NoReturn
 
 import typer
 import uvicorn
-import yaml
 
 from jobfinder.pipeline import run_poll
 from jobfinder.settings import (
@@ -35,6 +34,7 @@ from jobfinder.settings import (
     load_companies,
     load_profile,
     load_weights,
+    save_companies,
 )
 from jobfinder.sources.base import build_sources
 from jobfinder.sources.http import HttpClient, configure_default_client
@@ -161,6 +161,7 @@ def _echo_summary(summary: RunSummary) -> None:
             f"eligible={src.eligible} scored={src.scored}"
         )
     typer.echo(f"Pruned {summary.pruned} stale job(s).")
+    typer.echo(f"Discovered {summary.discovered} new board token(s).")
 
 
 @app.command()
@@ -204,15 +205,8 @@ def add_company(
     else:
         entries.append(CompanyEntry(token=token, name=name, verified=True))
 
-    settings.config_dir.mkdir(parents=True, exist_ok=True)
-    _write_companies(companies_path, config)
+    save_companies(companies_path, config)
     typer.echo(f"Wrote verified {ats} token {token!r} to {companies_path}")
-
-
-def _write_companies(path: Path, config: CompaniesConfig) -> None:
-    """Serialize ``config`` back to ``companies.yaml`` (LLD §11.2)."""
-    data = {ats: [entry.model_dump() for entry in getattr(config, ats)] for ats in _VALID_ATS}
-    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
 
 @app.command()

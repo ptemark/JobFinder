@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from jobfinder.discovery import harvest_tokens
 from jobfinder.filters import is_eligible
 from jobfinder.normalize import normalize
 from jobfinder.score import (
@@ -98,6 +99,7 @@ class RunSummary:
     finished_at: datetime
     per_source: dict[str, SourceSummary]
     pruned: int
+    discovered: int = 0
 
 
 def run_poll(
@@ -142,6 +144,7 @@ def run_poll(
         init_db(conn)
         run_id = start_run(conn, now=now) if run_id is None else run_id
         per_source: dict[str, SourceSummary] = {}
+        discovered_urls: list[str] = []
         for src in sources:
             per_source[src.name] = _poll_source(
                 src,
@@ -152,7 +155,17 @@ def run_poll(
                 model=model,
                 throttle_s=settings.throttle_s,
                 now=now,
+                discovered_urls=discovered_urls,
             )
+        # Scan the polled URLs for ATS board tokens and append new ones as
+        # unverified company entries (LLD §3.6 / §8): coverage beyond the seed list,
+        # picked up on a later poll once a human verifies them.
+        discovered = harvest_tokens(
+            discovered_urls,
+            companies_path=settings.config_dir / "companies.yaml",
+            conn=conn,
+            now=now,
+        )
         # Retention is an operational setting (LLD §8 / §11.4); recency uses the
         # profile's max_age_days (LLD §6.3). Both default to their doc values.
         pruned = prune(conn, not_seen_days=settings.retention_days, now=now)
@@ -166,6 +179,7 @@ def run_poll(
         finished_at=now,
         per_source=per_source,
         pruned=pruned,
+        discovered=len(discovered),
     )
 
 
@@ -179,8 +193,14 @@ def _poll_source(
     model: Encoder,
     throttle_s: float,
     now: datetime,
+    discovered_urls: list[str],
 ) -> SourceSummary:
-    """Fetch and process one source, isolated by the per-source bulkhead (LLD §8)."""
+    """Fetch and process one source, isolated by the per-source bulkhead (LLD §8).
+
+    ``discovered_urls`` accumulates each normalized posting's URL across sources so
+    :func:`discovery.harvest_tokens` can scan them for new board tokens after the
+    poll (LLD §3.6).
+    """
     summary = SourceSummary()
     try:
         result = src.fetch(max_age_days=profile.max_age_days, throttle_s=throttle_s)
@@ -202,6 +222,7 @@ def _poll_source(
             profile_vec=profile_vec,
             model=model,
             now=now,
+            discovered_urls=discovered_urls,
         )
     logger.info(
         "%s funnel: fetched=%d kept=%d eligible=%d scored=%d",
@@ -224,9 +245,11 @@ def _process_posting(
     profile_vec: NDArray,
     model: Encoder,
     now: datetime,
+    discovered_urls: list[str],
 ) -> None:
     """Normalize, classify, optionally embed+score, and upsert one posting (LLD §8)."""
     job = normalize(raw, company_hint=raw.company_hint, now=now)
+    discovered_urls.append(job.url)
     eligible, reason = is_eligible(job, profile=profile, now=now)
     job.eligible, job.ineligible_reason = eligible, reason
     job.content_hash = _content_hash(job)

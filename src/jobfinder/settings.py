@@ -183,6 +183,23 @@ def load_companies(path: str | Path) -> CompaniesConfig:
     return CompaniesConfig.model_validate(_read_yaml_mapping(Path(path)))
 
 
+def save_companies(path: str | Path, config: CompaniesConfig) -> None:
+    """Serialize ``config`` back to ``companies.yaml`` (LLD §11.2).
+
+    The companion writer to :func:`load_companies`, shared by the CLI's
+    ``add-company`` and discovery's token harvest (T23) so the on-disk shape stays
+    consistent. The parent directory is created if absent; per-ATS field order
+    (greenhouse, lever, ashby) follows the model declaration.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        name: [entry.model_dump() for entry in getattr(config, name)]
+        for name in CompaniesConfig.model_fields
+    }
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
 __all__ = [
     "Settings",
     "Profile",
@@ -193,4 +210,5 @@ __all__ = [
     "load_profile",
     "load_weights",
     "load_companies",
+    "save_companies",
 ]
