@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     adzuna_app_id: str | None = Field(default=None, alias="ADZUNA_APP_ID")
     adzuna_app_key: str | None = Field(default=None, alias="ADZUNA_APP_KEY")
 
+    # Adzuna query tunables (LLD §3.6: ``what`` plus configured ``where``/``category``).
+    # Defaults target Canadian backend roles; overridable via .env so the optional
+    # source is configured entirely alongside its keys (no extra config file).
+    adzuna_what: str = Field(default="backend software engineer", alias="ADZUNA_WHAT")
+    adzuna_where: str | None = Field(default=None, alias="ADZUNA_WHERE")
+    adzuna_category: str | None = Field(default=None, alias="ADZUNA_CATEGORY")
+
     @property
     def adzuna_enabled(self) -> bool:
         """True only when both Adzuna credentials are present."""

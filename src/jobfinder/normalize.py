@@ -280,12 +280,32 @@ def _extract_ashby(payload: dict, company_hint: str | None) -> _Fields:
     )
 
 
-# Source name -> field extractor. Each adapter's payload shape is mapped here;
-# the Adzuna extractor lands with its adapter task (T22).
+def _extract_adzuna(payload: dict, company_hint: str | None) -> _Fields:
+    """Map an Adzuna ``ca/search`` result object to common fields (LLD §3.6)."""
+    company = payload.get("company")
+    company_name = company.get("display_name", "") if isinstance(company, dict) else ""
+    location = payload.get("location")
+    location_raw = location.get("display_name", "") if isinstance(location, dict) else ""
+    return _Fields(
+        title=payload.get("title") or "",
+        # Adzuna descriptions are snippets that may carry HTML/entities; strip them.
+        description=html_to_text(payload.get("description") or ""),
+        company=company_name or company_hint or "",
+        location_raw=location_raw or "",
+        is_remote=False,  # Adzuna has no explicit remote flag; text decides
+        # ``redirect_url`` is the public posting link (also scanned for board
+        # tokens by discovery, LLD §3.6).
+        url=payload.get("redirect_url") or "",
+        posted_at=parse_date(payload.get("created"), "adzuna"),
+    )
+
+
+# Source name -> field extractor. Each adapter's payload shape is mapped here.
 _EXTRACTORS = {
     "greenhouse": _extract_greenhouse,
     "lever": _extract_lever,
     "ashby": _extract_ashby,
+    "adzuna": _extract_adzuna,
 }
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import random
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,6 +19,7 @@ import pytest
 from jobfinder.models import LocationBucket, RawPosting
 from jobfinder.normalize import normalize
 from jobfinder.settings import CompanyEntry, Settings
+from jobfinder.sources.adzuna import AdzunaSource
 from jobfinder.sources.ashby import AshbySource
 from jobfinder.sources.base import (
     Source,
@@ -385,6 +387,172 @@ def test_ashby_unexpected_shape_noted(tmp_path: Path) -> None:
         client=client,
         now=lambda: _NOW,
     )
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert result.raw == []
+    assert result.fetched == 0
+    assert any("unexpected payload shape" in note for note in result.errors)
+
+
+# --- Adzuna adapter (T22) ---------------------------------------------------
+
+
+def _adzuna_client(
+    tmp_path: Path,
+    handler: Callable[[httpx.Request], httpx.Response],
+) -> HttpClient:
+    return HttpClient(
+        cache_dir=tmp_path / "cache",
+        throttle_s=0.0,
+        transport=httpx.MockTransport(handler),
+        sleep=lambda _dt: None,
+        rng=random.Random(0),
+    )
+
+
+def _adzuna_fixture_handler() -> Callable[[httpx.Request], httpx.Response]:
+    """Serve the committed fixture on page 1, an empty result set thereafter."""
+    body = json.loads((FIXTURES / "adzuna_search.json").read_text(encoding="utf-8"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = request.url.path.rstrip("/").split("/")[-1]
+        if page == "1":
+            return httpx.Response(200, json=body)
+        return httpx.Response(200, json={"count": 0, "results": []})
+
+    return handler
+
+
+def _adzuna_source(client: HttpClient, **overrides) -> AdzunaSource:
+    kwargs = {
+        "app_id": "id",
+        "app_key": "key",
+        "what": "backend software engineer",
+        "where": None,
+        "category": None,
+        "client": client,
+        "now": lambda: _NOW,
+    }
+    kwargs.update(overrides)
+    return AdzunaSource(**kwargs)
+
+
+def test_adzuna_skips_without_keys(tmp_path: Path) -> None:
+    """Missing credentials disable the source cleanly — empty result, no error."""
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("no request should be made without credentials")
+
+    client = _adzuna_client(tmp_path, handler)
+    source = _adzuna_source(client, app_id=None, app_key=None)
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert result.raw == []
+    assert result.fetched == 0
+    assert any("skipped" in note for note in result.errors)
+
+
+def test_adzuna_fetch_parses_fixture(tmp_path: Path) -> None:
+    client = _adzuna_client(tmp_path, _adzuna_fixture_handler())
+    source = _adzuna_source(client)
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert result.source == "adzuna"
+    assert all(isinstance(rp, RawPosting) for rp in result.raw)
+    assert all(rp.source == "adzuna" for rp in result.raw)
+    # 4 postings on the page; the id-less one is skipped+noted.
+    assert result.fetched == 4
+    assert any("no id" in note for note in result.errors)
+
+
+def test_adzuna_recency_prefilter_drops_stale(tmp_path: Path) -> None:
+    client = _adzuna_client(tmp_path, _adzuna_fixture_handler())
+    source = _adzuna_source(client)
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    kept_ids = {rp.source_id for rp in result.raw}
+    # Fresh (ad-1001) and date-unknown (ad-1003) survive; the April-dated
+    # ad-1002 drops, and the id-less row never makes it in.
+    assert kept_ids == {"ad-1001", "ad-1003"}
+    assert result.kept_after_recency == 2
+
+
+def test_adzuna_normalize_round_trip(tmp_path: Path) -> None:
+    """The recency-filtered RawPostings feed normalize cleanly (LLD §4)."""
+    client = _adzuna_client(tmp_path, _adzuna_fixture_handler())
+    source = _adzuna_source(client)
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+    by_id = {rp.source_id: rp for rp in result.raw}
+
+    fresh = normalize(by_id["ad-1001"], company_hint=None, now=_NOW)
+    assert fresh.company == "Acme Cloud"  # carried in the Adzuna payload
+    assert fresh.title == "Senior Backend Software Engineer"
+    assert fresh.location_bucket is LocationBucket.REMOTE
+    assert "Java" in fresh.description and "AWS" in fresh.description  # HTML stripped
+    assert "<b>" not in fresh.description
+    assert fresh.url == "https://www.adzuna.ca/details/ad-1001"
+    assert fresh.posted_at is not None
+    assert fresh.date_unknown is False
+
+    undated = normalize(by_id["ad-1003"], company_hint=None, now=_NOW)
+    assert undated.company == "Harbour Labs"
+    assert undated.location_bucket is LocationBucket.VANCOUVER
+    assert undated.date_unknown is True  # no `created` field
+
+
+def test_adzuna_pagination_walks_until_short_page(tmp_path: Path) -> None:
+    """Paging continues while a page is full and stops on the first short page."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = request.url.path.rstrip("/").split("/")[-1]
+        calls.append(page)
+        if page == "1":
+            # A full page (== results_per_page) -> keep paging.
+            return httpx.Response(
+                200,
+                json={"results": [{"id": "ad-1001", "created": "2026-05-26T09:00:00Z"}]},
+            )
+        # Page 2 is short (empty) -> stop.
+        return httpx.Response(200, json={"results": []})
+
+    client = _adzuna_client(tmp_path, handler)
+    source = _adzuna_source(client, results_per_page=1, max_pages=5)
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert calls == ["1", "2"]  # fetched page 1 (full) then stopped on the short page 2
+    assert {rp.source_id for rp in result.raw} == {"ad-1001"}
+
+
+def test_adzuna_page_error_is_isolated(tmp_path: Path) -> None:
+    """A page HTTP error is recorded and stops paging without raising."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "boom"})
+
+    client = _adzuna_client(tmp_path, handler)
+    source = _adzuna_source(client)
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert result.raw == []
+    assert any("fetch failed" in note for note in result.errors)
+
+
+def test_adzuna_unexpected_shape_noted(tmp_path: Path) -> None:
+    """A payload without a results list is noted, not fatal."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"unexpected": True})
+
+    client = _adzuna_client(tmp_path, handler)
+    source = _adzuna_source(client)
 
     result = source.fetch(max_age_days=21, throttle_s=1.0)
 

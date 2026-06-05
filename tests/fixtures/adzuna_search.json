@@ -1,0 +1,42 @@
+{
+  "count": 4,
+  "results": [
+    {
+      "id": "ad-1001",
+      "title": "Senior Backend Software Engineer",
+      "description": "Join our platform team building backend services in <b>Java</b> and AWS. Remote across Canada.",
+      "company": { "display_name": "Acme Cloud" },
+      "location": { "display_name": "Remote (Canada)", "area": ["Canada"] },
+      "created": "2026-05-26T09:00:00Z",
+      "redirect_url": "https://www.adzuna.ca/details/ad-1001",
+      "salary_min": 130000,
+      "salary_max": 170000,
+      "category": { "label": "IT Jobs", "tag": "it-jobs" }
+    },
+    {
+      "id": "ad-1002",
+      "title": "Backend Developer",
+      "description": "Python backend role in Toronto.",
+      "company": { "display_name": "OldPost Inc" },
+      "location": { "display_name": "Toronto, ON", "area": ["Canada", "Ontario", "Toronto"] },
+      "created": "2026-04-01T12:00:00Z",
+      "redirect_url": "https://www.adzuna.ca/details/ad-1002"
+    },
+    {
+      "id": "ad-1003",
+      "title": "Software Engineer, Backend",
+      "description": "Kotlin services team in Vancouver.",
+      "company": { "display_name": "Harbour Labs" },
+      "location": { "display_name": "Vancouver, BC", "area": ["Canada", "British Columbia", "Vancouver"] },
+      "redirect_url": "https://www.adzuna.ca/details/ad-1003"
+    },
+    {
+      "title": "Backend Engineer (no id)",
+      "description": "Should be skipped: no id field.",
+      "company": { "display_name": "Ghost Co" },
+      "location": { "display_name": "Calgary, AB" },
+      "created": "2026-05-28T08:00:00Z",
+      "redirect_url": "https://www.adzuna.ca/details/ghost"
+    }
+  ]
+}
