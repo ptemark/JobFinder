@@ -13,6 +13,8 @@ from __future__ import annotations
 import csv
 import io
 import shutil
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -297,3 +299,20 @@ def test_help_documents_all_commands() -> None:
     assert result.exit_code == 0
     for command in ("poll", "serve", "add-company", "export", "init"):
         assert command in result.output
+
+
+# --- `python -m jobfinder` works (the README scheduling examples rely on it) --
+
+
+def test_python_m_jobfinder_runs_cli() -> None:
+    # The cron/launchd/Task Scheduler examples invoke `python -m jobfinder ...`;
+    # validate that module-execution path resolves to the same CLI. Offline:
+    # `--help` touches no network and loads no model.
+    result = subprocess.run(
+        [sys.executable, "-m", "jobfinder", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "poll" in result.stdout
