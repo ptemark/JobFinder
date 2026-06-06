@@ -1,11 +1,11 @@
 # Job Finder
 
 A local, single-user tool that discovers recent **backend software-engineering** job
-postings from public ATS feeds (Greenhouse, Lever, Ashby, and optionally the Adzuna
-aggregator), filters them to your targeting criteria, scores each posting against your
-full résumé using free local embeddings, and presents the ranked matches in a local web
-dashboard. **You apply manually** via the linked posting — the tool never submits an
-application.
+postings from public ATS feeds (Greenhouse, Lever, Ashby) and keyless job aggregators
+(Remotive, The Muse, and optionally Adzuna), filters them to your targeting criteria,
+scores each posting against your full résumé using free local embeddings, and presents
+the ranked matches in a local web dashboard. **You apply manually** via the linked
+posting — the tool never submits an application.
 
 - **$0 to run.** No paid APIs, no cloud hosting. Everything runs on your machine.
 - **Local & private.** The dashboard binds to loopback only; your résumé, database and
@@ -130,15 +130,32 @@ then set `verified: true`:
 To check a token, open the feed URL above in a browser — a valid token returns JSON job
 data, an invalid one returns an error.
 
+### Aggregator sources (no config required)
+
+Two cross-employer aggregators run automatically with **no keys** — they're the easiest
+way to "find anything that fits" rather than naming companies:
+
+| Source | Coverage | Config |
+|---|---|---|
+| **Remotive** | Remote software-dev roles (great for the remote bucket) | none |
+| **The Muse** | Software-engineering roles across Vancouver, Toronto, Ottawa, Montreal + remote | optional `THEMUSE_API_KEY` raises the rate limit |
+| **Adzuna** | Broad Canadian aggregator | requires both keys (below) |
+
+The pipeline's role gate + résumé scoring narrow every aggregator's results down to
+relevant backend roles, so they're safe to run wide.
+
 ### `.env` — optional secrets
 
-Only used for the **optional** Adzuna aggregator. Leave blank to run on the direct ATS
-feeds alone — Adzuna is skipped cleanly when keys are absent. Both keys are required for
-it to enable. A free-tier key is available at <https://developer.adzuna.com/>.
+Used for the **optional** Adzuna aggregator and the **optional** The Muse key. Leave any
+blank to run without them — Adzuna is skipped cleanly when its keys are absent, and The
+Muse simply runs key-free at a lower rate limit. Both Adzuna keys are required for it to
+enable. Free-tier keys: Adzuna <https://developer.adzuna.com/>, The Muse
+<https://www.themuse.com/developers/api/v2>.
 
 ```dotenv
 ADZUNA_APP_ID=
 ADZUNA_APP_KEY=
+THEMUSE_API_KEY=
 ```
 
 Operational tunables (throttle, cache TTL, paths) can be overridden with `JOBFINDER_*`

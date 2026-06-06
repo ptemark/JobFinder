@@ -1,0 +1,41 @@
+{
+  "page": 1,
+  "page_count": 1,
+  "total": 4,
+  "results": [
+    {
+      "id": 3001,
+      "name": "Senior Backend Software Engineer",
+      "company": { "name": "Maple Systems" },
+      "locations": [{ "name": "Toronto, Canada" }],
+      "publication_date": "2026-05-27T10:00:00.000000",
+      "refs": { "landing_page": "https://www.themuse.com/jobs/maplesystems/senior-backend-3001" },
+      "contents": "<p>Backend role using <b>Java</b> and Kotlin on AWS.</p>"
+    },
+    {
+      "id": 3002,
+      "name": "Backend Developer",
+      "company": { "name": "OldMuse Inc" },
+      "locations": [{ "name": "Toronto, Canada" }],
+      "publication_date": "2026-04-02T10:00:00.000000",
+      "refs": { "landing_page": "https://www.themuse.com/jobs/oldmuse/backend-developer-3002" },
+      "contents": "<p>Stale posting that should drop out on recency.</p>"
+    },
+    {
+      "id": 3003,
+      "name": "Software Engineer, Backend",
+      "company": { "name": "Harbour Remote" },
+      "locations": [{ "name": "Flexible / Remote" }],
+      "refs": { "landing_page": "https://www.themuse.com/jobs/harbour/software-engineer-backend-3003" },
+      "contents": "<p>Remote backend role. No publication date in this record.</p>"
+    },
+    {
+      "name": "Backend Engineer (no id)",
+      "company": { "name": "Ghost Co" },
+      "locations": [{ "name": "Toronto, Canada" }],
+      "publication_date": "2026-05-28T10:00:00.000000",
+      "refs": { "landing_page": "https://www.themuse.com/jobs/ghost" },
+      "contents": "<p>Should be skipped: no id field.</p>"
+    }
+  ]
+}

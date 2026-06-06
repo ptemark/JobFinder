@@ -1,0 +1,43 @@
+{
+  "job-count": 4,
+  "jobs": [
+    {
+      "id": 2001,
+      "title": "Senior Backend Engineer",
+      "company_name": "Northwind Remote",
+      "category": "Software Development",
+      "candidate_required_location": "Canada",
+      "publication_date": "2026-05-26T09:00:00",
+      "url": "https://remotive.com/remote-jobs/software-dev/senior-backend-engineer-2001",
+      "description": "<p>Build backend services in <b>Python</b> and AWS. Fully remote across Canada.</p>"
+    },
+    {
+      "id": 2002,
+      "title": "Backend Developer",
+      "company_name": "OldPost Remote",
+      "category": "Software Development",
+      "candidate_required_location": "Canada",
+      "publication_date": "2026-04-01T12:00:00",
+      "url": "https://remotive.com/remote-jobs/software-dev/backend-developer-2002",
+      "description": "<p>Stale posting that should drop out on recency.</p>"
+    },
+    {
+      "id": 2003,
+      "title": "Software Engineer, Backend",
+      "company_name": "Harbour Labs",
+      "category": "Software Development",
+      "candidate_required_location": "Worldwide",
+      "url": "https://remotive.com/remote-jobs/software-dev/software-engineer-backend-2003",
+      "description": "<p>Kotlin services team. No publication date in this record.</p>"
+    },
+    {
+      "title": "Backend Engineer (no id)",
+      "company_name": "Ghost Co",
+      "category": "Software Development",
+      "candidate_required_location": "Canada",
+      "publication_date": "2026-05-28T08:00:00",
+      "url": "https://remotive.com/remote-jobs/software-dev/ghost",
+      "description": "<p>Should be skipped: no id field.</p>"
+    }
+  ]
+}

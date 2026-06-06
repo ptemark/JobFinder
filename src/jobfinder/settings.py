@@ -77,6 +77,11 @@ class Settings(BaseSettings):
         """True only when both Adzuna credentials are present."""
         return bool(self.adzuna_app_id) and bool(self.adzuna_app_key)
 
+    # Optional The Muse API key (.env only). The Muse works key-free at a lower
+    # rate limit, so this is not a skip-gate like Adzuna's — it just raises the
+    # ceiling when present. The source is always enabled.
+    themuse_api_key: str | None = Field(default=None, alias="THEMUSE_API_KEY")
+
     @property
     def config_dir(self) -> Path:
         return self.base_dir / "config"

@@ -300,12 +300,57 @@ def _extract_adzuna(payload: dict, company_hint: str | None) -> _Fields:
     )
 
 
+def _extract_remotive(payload: dict, company_hint: str | None) -> _Fields:
+    """Map a Remotive ``remote-jobs`` result object to common fields.
+
+    Every Remotive posting is remote, so ``is_remote`` is hard-set; the
+    ``candidate_required_location`` (e.g. "Canada", "USA only", "Worldwide")
+    becomes the free-text location so the bucketing heuristics can still scope it.
+    """
+    return _Fields(
+        title=payload.get("title") or "",
+        # Remotive descriptions are HTML; strip to text.
+        description=html_to_text(payload.get("description") or ""),
+        company=payload.get("company_name") or company_hint or "",
+        location_raw=payload.get("candidate_required_location") or "",
+        is_remote=True,  # Remotive is a remote-only board
+        url=payload.get("url") or "",
+        posted_at=parse_date(payload.get("publication_date"), "remotive"),
+    )
+
+
+def _extract_themuse(payload: dict, company_hint: str | None) -> _Fields:
+    """Map a The Muse public-jobs result object to common fields."""
+    company = payload.get("company")
+    company_name = company.get("name", "") if isinstance(company, dict) else ""
+    locations = payload.get("locations")
+    location_raw = ""
+    if isinstance(locations, list) and locations:
+        first = locations[0]
+        location_raw = first.get("name", "") if isinstance(first, dict) else ""
+    refs = payload.get("refs")
+    url = refs.get("landing_page", "") if isinstance(refs, dict) else ""
+    return _Fields(
+        title=payload.get("name") or "",
+        # The Muse delivers the body as HTML in ``contents``.
+        description=html_to_text(payload.get("contents") or ""),
+        company=company_name or company_hint or "",
+        location_raw=location_raw or "",
+        # No explicit remote flag; "Flexible / Remote" in the location text decides.
+        is_remote=False,
+        url=url or "",
+        posted_at=parse_date(payload.get("publication_date"), "themuse"),
+    )
+
+
 # Source name -> field extractor. Each adapter's payload shape is mapped here.
 _EXTRACTORS = {
     "greenhouse": _extract_greenhouse,
     "lever": _extract_lever,
     "ashby": _extract_ashby,
     "adzuna": _extract_adzuna,
+    "remotive": _extract_remotive,
+    "themuse": _extract_themuse,
 }
 
 

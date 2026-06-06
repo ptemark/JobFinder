@@ -31,6 +31,8 @@ from jobfinder.sources.base import (
 from jobfinder.sources.greenhouse import GreenhouseSource
 from jobfinder.sources.http import HttpClient
 from jobfinder.sources.lever import LeverSource
+from jobfinder.sources.remotive import RemotiveSource
+from jobfinder.sources.themuse import TheMuseSource
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -724,3 +726,171 @@ def test_lever_unexpected_shape_noted(tmp_path: Path) -> None:
     assert result.raw == []
     assert result.fetched == 0
     assert any("unexpected payload shape" in note for note in result.errors)
+
+
+# --- Remotive adapter -------------------------------------------------------
+
+
+def _mock_client(tmp_path: Path, handler: Callable[[httpx.Request], httpx.Response]) -> HttpClient:
+    return HttpClient(
+        cache_dir=tmp_path / "cache",
+        throttle_s=0.0,
+        transport=httpx.MockTransport(handler),
+        sleep=lambda _dt: None,
+        rng=random.Random(0),
+    )
+
+
+def _remotive_handler() -> Callable[[httpx.Request], httpx.Response]:
+    body = json.loads((FIXTURES / "remotive_jobs.json").read_text(encoding="utf-8"))
+    return lambda _request: httpx.Response(200, json=body)
+
+
+def test_remotive_fetch_parses_fixture(tmp_path: Path) -> None:
+    source = RemotiveSource(client=_mock_client(tmp_path, _remotive_handler()), now=lambda: _NOW)
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert result.source == "remotive"
+    assert all(isinstance(rp, RawPosting) and rp.source == "remotive" for rp in result.raw)
+    # 4 postings on the feed; the id-less one is skipped + noted.
+    assert result.fetched == 4
+    assert any("no id" in note for note in result.errors)
+
+
+def test_remotive_recency_prefilter_drops_stale(tmp_path: Path) -> None:
+    source = RemotiveSource(client=_mock_client(tmp_path, _remotive_handler()), now=lambda: _NOW)
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    # Fresh (2001) and date-unknown (2003) survive; the April-dated 2002 drops.
+    assert {rp.source_id for rp in result.raw} == {"2001", "2003"}
+    assert result.kept_after_recency == 2
+
+
+def test_remotive_normalize_round_trip(tmp_path: Path) -> None:
+    source = RemotiveSource(client=_mock_client(tmp_path, _remotive_handler()), now=lambda: _NOW)
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+    by_id = {rp.source_id: rp for rp in result.raw}
+
+    fresh = normalize(by_id["2001"], company_hint=None, now=_NOW)
+    assert fresh.company == "Northwind Remote"
+    assert fresh.title == "Senior Backend Engineer"
+    assert fresh.location_bucket is LocationBucket.REMOTE  # remote-only board
+    assert "Python" in fresh.description and "<b>" not in fresh.description  # HTML stripped
+    assert fresh.url.endswith("senior-backend-engineer-2001")
+    assert fresh.date_unknown is False
+
+    undated = normalize(by_id["2003"], company_hint=None, now=_NOW)
+    assert undated.date_unknown is True  # no publication_date
+
+
+def test_remotive_fetch_error_is_isolated(tmp_path: Path) -> None:
+    client = _mock_client(tmp_path, lambda _r: httpx.Response(500, json={"error": "boom"}))
+    source = RemotiveSource(client=client, now=lambda: _NOW)
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert result.raw == []
+    assert any("fetch failed" in note for note in result.errors)
+
+
+# --- The Muse adapter -------------------------------------------------------
+
+
+def _themuse_handler() -> Callable[[httpx.Request], httpx.Response]:
+    """Serve the committed fixture on page 1, an empty result set thereafter."""
+    body = json.loads((FIXTURES / "themuse_jobs.json").read_text(encoding="utf-8"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("page") == "1":
+            return httpx.Response(200, json=body)
+        return httpx.Response(200, json={"page": 2, "page_count": 1, "results": []})
+
+    return handler
+
+
+def _themuse_source(client: HttpClient, **overrides) -> TheMuseSource:
+    kwargs = {
+        "client": client,
+        "api_key": None,
+        "locations": ("Toronto, Canada",),
+        "now": lambda: _NOW,
+    }
+    kwargs.update(overrides)
+    return TheMuseSource(**kwargs)
+
+
+def test_themuse_fetch_parses_fixture(tmp_path: Path) -> None:
+    source = _themuse_source(_mock_client(tmp_path, _themuse_handler()))
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert result.source == "themuse"
+    assert all(isinstance(rp, RawPosting) and rp.source == "themuse" for rp in result.raw)
+    # 4 postings on the page; the id-less one is skipped + noted.
+    assert result.fetched == 4
+    assert any("no id" in note for note in result.errors)
+
+
+def test_themuse_recency_prefilter_drops_stale(tmp_path: Path) -> None:
+    source = _themuse_source(_mock_client(tmp_path, _themuse_handler()))
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    # Fresh (3001) and date-unknown (3003) survive; the April-dated 3002 drops.
+    assert {rp.source_id for rp in result.raw} == {"3001", "3003"}
+    assert result.kept_after_recency == 2
+
+
+def test_themuse_normalize_round_trip(tmp_path: Path) -> None:
+    source = _themuse_source(_mock_client(tmp_path, _themuse_handler()))
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+    by_id = {rp.source_id: rp for rp in result.raw}
+
+    fresh = normalize(by_id["3001"], company_hint=None, now=_NOW)
+    assert fresh.company == "Maple Systems"
+    assert fresh.title == "Senior Backend Software Engineer"
+    assert fresh.location_bucket is LocationBucket.TORONTO
+    assert "Java" in fresh.description and "<b>" not in fresh.description  # HTML stripped
+    assert fresh.url.endswith("senior-backend-3001")
+    assert fresh.date_unknown is False
+
+    remote = normalize(by_id["3003"], company_hint=None, now=_NOW)
+    assert remote.location_bucket is LocationBucket.REMOTE  # "Flexible / Remote"
+    assert remote.date_unknown is True  # no publication_date
+
+
+def test_themuse_stops_at_page_count(tmp_path: Path) -> None:
+    """The walk stops once the reported page_count is reached (no wasted calls)."""
+    pages: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        pages.append(request.url.params.get("page"))
+        # Two full pages then bounded by page_count=2.
+        return httpx.Response(
+            200,
+            json={
+                "page": int(request.url.params.get("page", "1")),
+                "page_count": 2,
+                "results": [{"id": 4000 + len(pages), "publication_date": "2026-05-27T10:00:00"}],
+            },
+        )
+
+    source = _themuse_source(_mock_client(tmp_path, handler), max_pages=5)
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert pages == ["1", "2"]  # stopped at page_count even though max_pages=5
+    assert result.fetched == 2
+
+
+def test_themuse_page_error_is_isolated(tmp_path: Path) -> None:
+    client = _mock_client(tmp_path, lambda _r: httpx.Response(500, json={"error": "boom"}))
+    source = _themuse_source(client)
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert result.raw == []
+    assert any("fetch failed" in note for note in result.errors)
