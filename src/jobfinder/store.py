@@ -73,16 +73,22 @@ CREATE INDEX IF NOT EXISTS ix_scores_final ON scores(final);
 """
 
 
-def connect(db_path: str | Path) -> sqlite3.Connection:
+def connect(db_path: str | Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
     """Open a connection to ``db_path`` with the LLD §7.1 PRAGMAs applied.
 
     Pass ``":memory:"`` for tests. Rows are returned as :class:`sqlite3.Row`
     so callers can address columns by name. The parent directory is created if
     it does not already exist (a real file path; ``:memory:`` is left alone).
+
+    ``check_same_thread=False`` lets the connection be used from a thread other
+    than the one that created it. The web layer needs this: FastAPI runs the
+    per-request dependency and the endpoint on separate threadpool threads, so a
+    same-thread connection would raise ``ProgrammingError`` on use. Safe because
+    each request owns its own short-lived connection (no concurrent sharing).
     """
     if db_path != ":memory:":
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     for pragma in _PRAGMAS:
         conn.execute(pragma)

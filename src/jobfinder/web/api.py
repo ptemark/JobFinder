@@ -54,7 +54,7 @@ router = APIRouter(prefix="/api")
 
 def get_conn(request: Request) -> Iterator[sqlite3.Connection]:
     """Yield a per-request SQLite connection to the configured DB, closed after use."""
-    conn = connect(request.app.state.settings.db_path)
+    conn = connect(request.app.state.settings.db_path, check_same_thread=False)
     try:
         yield conn
     finally:

@@ -69,7 +69,9 @@ def _factory(name: str) -> SourceFactory:
 
 @pytest.fixture
 def settings(tmp_path) -> Settings:
-    return Settings(base_dir=tmp_path)
+    # _env_file=None keeps the fixture hermetic: a developer's real .env (e.g.
+    # populated Adzuna keys) must not leak into tests that assert on defaults.
+    return Settings(base_dir=tmp_path, _env_file=None)
 
 
 def test_source_result_defaults() -> None:
