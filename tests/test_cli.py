@@ -291,6 +291,80 @@ def test_export_to_stdout_when_no_path(base: Path) -> None:
     assert result.output.splitlines()[0].startswith("score,")  # header even with no jobs
 
 
+def _seed_scored_job(
+    conn: object, source_id: str, *, bucket: LocationBucket, final: float, eligible: bool = True
+) -> Job:
+    """Insert one eligible, scored job in ``bucket`` with ``final`` for filter tests."""
+    job = Job(
+        id=Job.make_id("greenhouse", source_id),
+        source="greenhouse",
+        source_id=source_id,
+        company="Acme",
+        title="Senior Backend Engineer",
+        description="Java and AWS backend role.",
+        location_raw=bucket.value,
+        is_remote=bucket is LocationBucket.REMOTE,
+        location_bucket=bucket,
+        seniority=Seniority.SENIOR,
+        url=f"https://example.com/{source_id}",
+        posted_at=_NOW,
+        date_unknown=False,
+        first_seen_at=_NOW,
+        last_seen_at=_NOW,
+        eligible=eligible,
+    )
+    upsert_job(conn, job)
+    save_score(
+        conn,
+        job.id,
+        ScoreBreakdown(
+            final=final, semantic=0.8, skill=1.0, location=1.0, recency=0.9, scored_at=_NOW
+        ),
+    )
+    return job
+
+
+def _export_company_ids(output_csv: str) -> set[str]:
+    """Return the set of ``url`` values (data rows) from a captured export CSV."""
+    rows = list(csv.reader(io.StringIO(output_csv)))
+    url_col = list(cli._EXPORT_COLUMNS).index("url")
+    return {row[url_col] for row in rows[1:]}
+
+
+def test_export_min_score_filters_low_scores(base: Path) -> None:
+    conn = connect(base / "data" / "jobs.db")
+    init_db(conn)
+    _seed_scored_job(conn, "high", bucket=LocationBucket.REMOTE, final=90.0)
+    _seed_scored_job(conn, "low", bucket=LocationBucket.REMOTE, final=40.0)
+    conn.close()
+
+    result = runner.invoke(app, ["export", "--min-score", "75"])
+    assert result.exit_code == 0, result.output
+    assert _export_company_ids(result.output) == {"https://example.com/high"}
+
+
+def test_export_bucket_filter_is_repeatable(base: Path) -> None:
+    conn = connect(base / "data" / "jobs.db")
+    init_db(conn)
+    _seed_scored_job(conn, "remote", bucket=LocationBucket.REMOTE, final=90.0)
+    _seed_scored_job(conn, "van", bucket=LocationBucket.VANCOUVER, final=85.0)
+    _seed_scored_job(conn, "tor", bucket=LocationBucket.TORONTO, final=80.0)
+    conn.close()
+
+    result = runner.invoke(app, ["export", "--bucket", "remote", "--bucket", "toronto"])
+    assert result.exit_code == 0, result.output
+    assert _export_company_ids(result.output) == {
+        "https://example.com/remote",
+        "https://example.com/tor",
+    }
+
+
+def test_export_rejects_unknown_bucket(base: Path) -> None:
+    result = runner.invoke(app, ["export", "--bucket", "mars"])
+    assert result.exit_code == 1
+    assert "unknown bucket" in result.output
+
+
 # --- help documents every command -------------------------------------------
 
 

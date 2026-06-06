@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Annotated, NoReturn
 import typer
 import uvicorn
 
+from jobfinder.models import LocationBucket
 from jobfinder.pipeline import run_poll
 from jobfinder.settings import (
     CompaniesConfig,
@@ -38,7 +39,7 @@ from jobfinder.settings import (
 )
 from jobfinder.sources.base import build_sources
 from jobfinder.sources.http import HttpClient, configure_default_client
-from jobfinder.store import connect, init_db, query_jobs
+from jobfinder.store import JobFilters, connect, init_db, query_jobs
 from jobfinder.web.app import create_app
 
 if TYPE_CHECKING:
@@ -52,6 +53,10 @@ logger = logging.getLogger(__name__)
 # The ATS providers a board token can belong to (LLD §11.2). add-company rejects
 # anything else so a typo fails fast rather than writing an un-pollable entry.
 _VALID_ATS = ("greenhouse", "lever", "ashby")
+
+# Location buckets accepted by ``export --bucket`` (LLD §4.1). Validated so a
+# typo'd bucket fails fast rather than silently matching nothing.
+_VALID_BUCKETS = tuple(bucket.value for bucket in LocationBucket)
 
 # Example → target pairs scaffolded by ``init`` (LLD §10). The committed
 # ``*.example`` files are the single source of truth; init copies, never invents,
@@ -209,21 +214,55 @@ def add_company(
     typer.echo(f"Wrote verified {ats} token {token!r} to {companies_path}")
 
 
+def _validate_buckets(bucket: list[str] | None) -> frozenset[str] | None:
+    """Validate ``--bucket`` values, returning a set (or ``None`` if unconstrained)."""
+    if not bucket:
+        return None
+    unknown = [value for value in bucket if value not in _VALID_BUCKETS]
+    if unknown:
+        _fail(
+            f"unknown bucket(s) {', '.join(map(repr, unknown))}; "
+            f"expected one of {', '.join(_VALID_BUCKETS)}"
+        )
+    return frozenset(bucket)
+
+
 @app.command()
 def export(
     csv_path: Annotated[
         Path | None,
         typer.Option("--csv", help="Write CSV to this path (defaults to stdout)."),
     ] = None,
+    min_score: Annotated[
+        float | None,
+        typer.Option("--min-score", help="Only export jobs scoring at least this (0–100)."),
+    ] = None,
+    bucket: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--bucket",
+            help="Restrict to these location buckets (repeatable): " + ", ".join(_VALID_BUCKETS),
+        ),
+    ] = None,
 ) -> None:
-    """Export the current ranked, eligible matches as CSV (LLD §10)."""
+    """Export the current ranked, eligible matches as CSV (LLD §10).
+
+    ``--min-score`` is applied in SQL via :class:`JobFilters`; ``--bucket`` is
+    repeatable (a set membership the single-valued filter can't express), so it
+    is applied to the already-ranked rows here.
+    """
     settings = _validated_settings(require_config=False)
+    buckets = _validate_buckets(bucket)
+
     conn = connect(settings.db_path)
     try:
         init_db(conn)
-        rows = query_jobs(conn, sort="best")
+        rows = query_jobs(conn, filters=JobFilters(min_score=min_score), sort="best")
     finally:
         conn.close()
+
+    if buckets is not None:
+        rows = [row for row in rows if row["location_bucket"] in buckets]
 
     if csv_path is not None:
         with csv_path.open("w", newline="", encoding="utf-8") as handle:
