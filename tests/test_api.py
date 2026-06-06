@@ -204,6 +204,30 @@ def test_list_filter_min_score(client: TestClient) -> None:
     }
 
 
+def test_list_per_company_limit_keeps_top_scored(client: TestClient) -> None:
+    # Acme has three eligible jobs (a=90, b=70, c=50); capping to 2 drops the
+    # lowest-scored c, and the unpaginated total reflects the cap.
+    body = client.get("/api/jobs", params={"per_company_limit": 2}).json()
+    assert body["total"] == 2
+    assert [i["id"] for i in body["items"]] == [
+        make_job_id("greenhouse", "a"),
+        make_job_id("greenhouse", "b"),
+    ]
+
+
+def test_list_per_company_limit_is_per_company_not_global(client: TestClient) -> None:
+    # With ineligibles shown there are two companies: Acme (a,b,c) and Globex (d).
+    # A cap of 2 keeps Acme's top two AND Globex's single job — proving the cap
+    # partitions by company rather than truncating the whole list.
+    body = client.get(
+        "/api/jobs", params={"per_company_limit": 2, "include_ineligible": True}
+    ).json()
+    assert body["total"] == 3
+    ids = {i["id"] for i in body["items"]}
+    assert make_job_id("greenhouse", "c") not in ids
+    assert make_job_id("lever", "d") in ids
+
+
 def test_list_filter_source(client: TestClient) -> None:
     # Lever's only job is ineligible, so it appears only with the debug toggle.
     body = client.get("/api/jobs", params={"source": "lever", "include_ineligible": True}).json()

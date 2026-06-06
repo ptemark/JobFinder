@@ -155,6 +155,7 @@ def list_jobs(
     max_age_days: int | None = Query(default=None, ge=1),
     sort: Literal["best", "newest"] = Query(default="best"),
     include_ineligible: bool = Query(default=False),
+    per_company_limit: int | None = Query(default=None, ge=1),
     limit: int | None = Query(default=None, ge=1),
     offset: int = Query(default=0, ge=0),
 ) -> JobListResponse:
@@ -169,8 +170,16 @@ def list_jobs(
         max_age_days=max_age_days,
         include_ineligible=include_ineligible,
     )
-    rows = query_jobs(conn, filters=filters, sort=sort, limit=limit, offset=offset, now=now)
-    total = count_jobs(conn, filters=filters, now=now)
+    rows = query_jobs(
+        conn,
+        filters=filters,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+        per_company_limit=per_company_limit,
+        now=now,
+    )
+    total = count_jobs(conn, filters=filters, per_company_limit=per_company_limit, now=now)
     skills = request.app.state.profile.must_have_skills
     threshold = previous_run_finished_at(conn)
     items = [

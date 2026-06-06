@@ -407,6 +407,29 @@ _SORT_ORDERS = {
     "newest": "j.posted_at DESC NULLS LAST, s.final DESC NULLS LAST",
 }
 
+# Flat-column equivalents of _SORT_ORDERS, for use *outside* the j./s. join: the
+# per-company cap wraps the joined query in a subquery whose output columns are
+# unqualified (the table aliases don't survive the wrap).
+_FLAT_SORT_ORDERS = {
+    "best": "final DESC NULLS LAST, posted_at DESC NULLS LAST",
+    "newest": "posted_at DESC NULLS LAST, final DESC NULLS LAST",
+}
+
+
+def _ranked_by_company(base_sql: str) -> str:
+    """Wrap ``base_sql`` (a joined SELECT) so each row gains a ``_rn`` rank within
+    its company, most applicable first (highest final score, then most recent).
+
+    A blank/NULL company partitions by ``id`` instead, so an unknown employer is
+    never collapsed with unrelated postings — each stands alone (rank 1) and is
+    always kept by the cap.
+    """
+    return (
+        "SELECT *, ROW_NUMBER() OVER ("
+        "PARTITION BY COALESCE(NULLIF(company, ''), id) "
+        f"ORDER BY {_FLAT_SORT_ORDERS['best']}) AS _rn FROM ({base_sql})"
+    )
+
 
 def _job_where(filters: JobFilters, now: datetime) -> tuple[str, dict[str, object]]:
     """Build the parameterized WHERE clause for the dashboard filters (LLD §9.1)."""
@@ -454,14 +477,28 @@ def query_jobs(
     sort: str = "best",
     limit: int | None = None,
     offset: int = 0,
+    per_company_limit: int | None = None,
     now: datetime | None = None,
 ) -> list[sqlite3.Row]:
     """Return jobs (joined with score + status) matching ``filters``, ordered by
-    ``sort`` (``best``|``newest``) with optional pagination (LLD §9.1–§9.2)."""
+    ``sort`` (``best``|``newest``) with optional pagination (LLD §9.1–§9.2).
+
+    ``per_company_limit`` keeps only the N most applicable postings per company
+    (highest score first); ``None`` keeps them all.
+    """
     filters = filters if filters is not None else JobFilters()
     where, params = _job_where(filters, _now(now))
-    order = _SORT_ORDERS.get(sort, _SORT_ORDERS["best"])
-    sql = f"SELECT {_JOB_COLUMNS} {_JOB_FROM}{where} ORDER BY {order}"
+    base = f"SELECT {_JOB_COLUMNS} {_JOB_FROM}{where}"
+    if per_company_limit is not None:
+        order = _FLAT_SORT_ORDERS.get(sort, _FLAT_SORT_ORDERS["best"])
+        sql = (
+            f"SELECT * FROM ({_ranked_by_company(base)}) "
+            f"WHERE _rn <= :per_company_limit ORDER BY {order}"
+        )
+        params["per_company_limit"] = per_company_limit
+    else:
+        order = _SORT_ORDERS.get(sort, _SORT_ORDERS["best"])
+        sql = f"{base} ORDER BY {order}"
     if limit is not None:
         sql += " LIMIT :limit OFFSET :offset"
         params["limit"] = limit
@@ -473,11 +510,23 @@ def count_jobs(
     conn: sqlite3.Connection,
     *,
     filters: JobFilters | None = None,
+    per_company_limit: int | None = None,
     now: datetime | None = None,
 ) -> int:
-    """Count jobs matching ``filters`` (the unpaginated total for the list view)."""
+    """Count jobs matching ``filters`` (the unpaginated total for the list view).
+
+    ``per_company_limit`` mirrors :func:`query_jobs` so the total reflects the
+    capped set the user actually sees.
+    """
     filters = filters if filters is not None else JobFilters()
     where, params = _job_where(filters, _now(now))
+    if per_company_limit is not None:
+        base = f"SELECT {_JOB_COLUMNS} {_JOB_FROM}{where}"
+        params["per_company_limit"] = per_company_limit
+        return conn.execute(
+            f"SELECT COUNT(*) FROM ({_ranked_by_company(base)}) WHERE _rn <= :per_company_limit",
+            params,
+        ).fetchone()[0]
     return conn.execute(f"SELECT COUNT(*) {_JOB_FROM}{where}", params).fetchone()[0]
 
 
