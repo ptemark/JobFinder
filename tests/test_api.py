@@ -285,6 +285,23 @@ def test_status_filter_and_dismissed_hidden_from_new(client: TestClient) -> None
     assert make_job_id("greenhouse", "b") in new_ids
 
 
+def test_dismissed_hidden_from_default_listing(client: TestClient) -> None:
+    # spec §7 / §13 DoD: dismissing a job hides it from the default list (no status
+    # filter) and the hide persists — but it stays reachable via status=dismissed.
+    job_id = make_job_id("greenhouse", "a")
+    before = {i["id"] for i in client.get("/api/jobs").json()["items"]}
+    assert job_id in before
+
+    client.post(f"/api/jobs/{job_id}/status", json={"state": "dismissed"})
+
+    after = client.get("/api/jobs").json()
+    assert job_id not in {i["id"] for i in after["items"]}
+    assert after["total"] == len(before) - 1
+    # Still retrievable when explicitly asked for.
+    only = client.get("/api/jobs", params={"status": "dismissed"}).json()["items"]
+    assert [i["id"] for i in only] == [job_id]
+
+
 def test_status_invalid_state_422(client: TestClient) -> None:
     job_id = make_job_id("greenhouse", "a")
     assert client.post(f"/api/jobs/{job_id}/status", json={"state": "bogus"}).status_code == 422

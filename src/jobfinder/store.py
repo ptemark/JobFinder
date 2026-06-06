@@ -387,6 +387,13 @@ _JOB_COLUMNS = (
     "st.state AS status_state"
 )
 
+# Status states used in the WHERE clause. An untouched job has no status row and
+# reads as 'new' (LLD §9.2); a dismissed job is excluded from the default listing
+# (spec §7: an eligible posting is "not already marked dismissed" — §13 DoD:
+# dismissing "hides it and persists across restart"). Mirror models.Status values.
+_DEFAULT_STATE = "new"  # models.Status.NEW — implicit status of an untouched job
+_DISMISSED_STATE = "dismissed"  # models.Status.DISMISSED — hidden unless asked for
+
 # Sort orders (LLD §9.2). NULLS LAST keeps unscored / undated jobs at the bottom
 # rather than the top (SQLite ≥ 3.30 honours the clause).
 _SORT_ORDERS = {
@@ -411,9 +418,17 @@ def _job_where(filters: JobFilters, now: datetime) -> tuple[str, dict[str, objec
         clauses.append("j.seniority = :seniority")
         params["seniority"] = filters.seniority
     if filters.status is not None:
-        # Untouched jobs have no status row; they read as 'new' (LLD §9.2).
-        clauses.append("COALESCE(st.state, 'new') = :status")
+        # Untouched jobs have no status row; they read as 'new' (LLD §9.2). An
+        # explicit filter still surfaces dismissed jobs (status=dismissed) so the
+        # user can review or undo them.
+        clauses.append("COALESCE(st.state, :default_state) = :status")
         params["status"] = filters.status
+        params["default_state"] = _DEFAULT_STATE
+    else:
+        # No explicit status filter: hide dismissed jobs by default (spec §7, §13).
+        clauses.append("COALESCE(st.state, :default_state) != :dismissed_state")
+        params["default_state"] = _DEFAULT_STATE
+        params["dismissed_state"] = _DISMISSED_STATE
     if filters.min_score is not None:
         clauses.append("s.final >= :min_score")
         params["min_score"] = filters.min_score
