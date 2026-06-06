@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Annotated, NoReturn
 import typer
 import uvicorn
 
+from jobfinder.logging_setup import setup_logging
 from jobfinder.models import LocationBucket
 from jobfinder.pipeline import run_poll
 from jobfinder.settings import (
@@ -131,8 +132,8 @@ def poll(
     ] = None,
 ) -> None:
     """Run one poll: fetch, normalize, filter, score and persist (LLD §8)."""
-    logging.basicConfig(level=logging.INFO)
     settings = _validated_settings()
+    setup_logging(settings)
 
     if no_cache:
         # Install a cache-bypassing default client *before* the source factories
@@ -178,6 +179,7 @@ def serve(
 ) -> None:
     """Serve the dashboard locally (LLD §9). Defaults bind loopback only."""
     settings = _validated_settings()
+    setup_logging(settings)
     application = create_app(settings)
     uvicorn.run(application, host=host, port=port)
 

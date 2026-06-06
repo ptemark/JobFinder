@@ -12,12 +12,14 @@ skipping re-embedding for unchanged postings (LLD §6.4 / §8).
 from __future__ import annotations
 
 import json
+import logging
 import random
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
+import pytest
 
 from jobfinder.models import RawPosting
 from jobfinder.pipeline import run_poll
@@ -26,7 +28,7 @@ from jobfinder.sources.base import SourceResult
 from jobfinder.sources.greenhouse import GreenhouseSource
 from jobfinder.sources.http import HttpClient
 from jobfinder.sources.lever import LeverSource
-from jobfinder.store import connect, init_db, start_run
+from jobfinder.store import connect, init_db, latest_run, start_run
 
 FIXTURES = Path(__file__).parent / "fixtures"
 # Same reference instant as the source tests: the fresh fixtures sit within the
@@ -110,6 +112,18 @@ class _BoomSource:
 
     def fetch(self, *, max_age_days: int, throttle_s: float) -> SourceResult:
         raise RuntimeError("provider exploded")
+
+
+class _KillSource:
+    """A source whose fetch raises ``KeyboardInterrupt`` — simulating the process
+    being killed mid-poll. The bulkhead deliberately catches only ``Exception``
+    (a provider error), so this ``BaseException`` propagates out of ``run_poll``
+    just like a real interrupt, leaving the run row unfinished (LLD §8 / §12)."""
+
+    name = "kill"
+
+    def fetch(self, *, max_age_days: int, throttle_s: float) -> SourceResult:
+        raise KeyboardInterrupt
 
 
 def _rows(db_path: Path) -> list:
@@ -313,3 +327,75 @@ def test_run_poll_finishes_a_reserved_run_id(tmp_path: Path, embed_model) -> Non
     # Exactly one run row — the reserved one — and it is now finished.
     assert [r["id"] for r in runs] == [reserved]
     assert runs[0]["finished_at"] == _NEXT_DAY.isoformat()
+
+
+def test_run_poll_crash_mid_poll_leaves_db_consistent_and_recovers(
+    tmp_path: Path, embed_model
+) -> None:
+    # T26 hardening: a kill mid-poll (after one source has persisted its jobs)
+    # must leave the DB consistent — whole rows, no partials, no duplicates — and
+    # an idempotent re-run must recover (LLD §8 / §12). Each store write commits
+    # per-job, so the killed poll's committed rows are intact and its run row is
+    # left unfinished.
+    base = _make_base_dir(tmp_path)
+    settings = Settings(base_dir=base)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_poll(
+            settings,
+            sources=[_greenhouse_source(tmp_path), _KillSource()],
+            model=embed_model,
+            now=_NOW,
+        )
+
+    # Greenhouse's 2 eligible jobs are committed whole (scored + embedded); the
+    # interrupted run was never finished, so the dashboard sees no "latest" poll.
+    partial = _rows(settings.db_path)
+    assert len(partial) == 2
+    assert all(row["embedding"] is not None for row in partial)
+    assert all(row["final"] is not None for row in partial)
+    conn = connect(settings.db_path)
+    try:
+        assert latest_run(conn) is None  # killed run has no finished_at
+    finally:
+        conn.close()
+
+    # A clean re-run recovers: every source completes, the previously persisted
+    # greenhouse jobs are upserted in place (no duplicates, re-embed skipped),
+    # and lever's jobs land too.
+    summary = run_poll(
+        settings,
+        sources=[_greenhouse_source(tmp_path), _lever_source(tmp_path)],
+        model=embed_model,
+        now=_NEXT_DAY,
+    )
+
+    recovered = _rows(settings.db_path)
+    assert len(recovered) == 4  # 2 greenhouse (idempotent) + 2 lever, no dupes
+    assert all(row["final"] is not None for row in recovered)
+    assert summary.per_source["greenhouse"].scored == 0  # unchanged → re-embed skipped
+    assert summary.per_source["lever"].scored == 2
+    conn = connect(settings.db_path)
+    try:
+        assert latest_run(conn) is not None  # the recovery run finished cleanly
+    finally:
+        conn.close()
+
+
+def test_run_poll_logs_the_funnel_per_source(
+    tmp_path: Path, embed_model, caplog: pytest.LogCaptureFixture
+) -> None:
+    # T26: the per-source count funnel (LLD §12) must be logged for each source.
+    base = _make_base_dir(tmp_path)
+    settings = Settings(base_dir=base)
+
+    with caplog.at_level(logging.INFO, logger="jobfinder.pipeline"):
+        run_poll(
+            settings,
+            sources=[_greenhouse_source(tmp_path)],
+            model=embed_model,
+            now=_NOW,
+        )
+
+    funnels = [r.getMessage() for r in caplog.records if "funnel" in r.getMessage()]
+    assert any("greenhouse funnel: fetched=4 kept=2 eligible=2 scored=2" in msg for msg in funnels)

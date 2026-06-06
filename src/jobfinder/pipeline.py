@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from jobfinder.discovery import harvest_tokens
 from jobfinder.filters import is_eligible
+from jobfinder.logging_setup import setup_logging
 from jobfinder.normalize import normalize
 from jobfinder.score import (
     build_profile_vector,
@@ -311,8 +312,9 @@ def main(argv: list[str] | None = None) -> None:
         help="finish an already-reserved poll_runs id instead of opening a new run",
     )
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO)
-    run_poll(Settings(), run_id=args.run_id)
+    settings = Settings()
+    setup_logging(settings)
+    run_poll(settings, run_id=args.run_id)
 
 
 __all__ = ["RunSummary", "SourceSummary", "main", "run_poll"]
