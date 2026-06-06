@@ -91,16 +91,32 @@ class HttpClient:
     # --- Public API (LLD §3.2) ---------------------------------------------
 
     def get_json(
-        self, url: str, *, params: dict[str, Any] | None = None, ttl_s: int | None = None
+        self,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        ttl_s: int | None = None,
     ) -> Any:
-        """GET ``url`` and parse the body as JSON (used by the JSON ATS feeds)."""
-        return json.loads(self._get_text(url, params=params, ttl_s=ttl_s))
+        """GET ``url`` and parse the body as JSON (used by the JSON ATS feeds).
+
+        ``headers`` are merged onto the client defaults for this request only
+        (e.g. an API key header). They are *not* part of the cache key, so the
+        secret never reaches a cache filename — fine because the query (which
+        does vary the cache key) lives entirely in ``url``/``params`` here.
+        """
+        return json.loads(self._get_text(url, params=params, headers=headers, ttl_s=ttl_s))
 
     def get_text(
-        self, url: str, *, params: dict[str, Any] | None = None, ttl_s: int | None = None
+        self,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        ttl_s: int | None = None,
     ) -> str:
         """GET ``url`` and return the raw body text (used for XML feeds)."""
-        return self._get_text(url, params=params, ttl_s=ttl_s)
+        return self._get_text(url, params=params, headers=headers, ttl_s=ttl_s)
 
     def close(self) -> None:
         """Close the underlying connection pool."""
@@ -114,7 +130,14 @@ class HttpClient:
 
     # --- Internals ----------------------------------------------------------
 
-    def _get_text(self, url: str, *, params: dict[str, Any] | None, ttl_s: int | None) -> str:
+    def _get_text(
+        self,
+        url: str,
+        *,
+        params: dict[str, Any] | None,
+        ttl_s: int | None,
+        headers: dict[str, str] | None = None,
+    ) -> str:
         ttl = self._default_ttl_s if ttl_s is None else ttl_s
         # Canonicalize the full URL (including query) so the cache key and the
         # throttle host both reflect the exact request.
@@ -126,18 +149,18 @@ class HttpClient:
             if cached is not None:
                 return cached  # cache hit: no network, no throttle (LLD §3.2)
 
-        body = self._request_with_retry(full_url)
+        body = self._request_with_retry(full_url, headers=headers)
 
         if not self._no_cache and ttl > 0:
             self._write_cache(cache_path, body)
         return body
 
-    def _request_with_retry(self, url: httpx.URL) -> str:
+    def _request_with_retry(self, url: httpx.URL, *, headers: dict[str, str] | None = None) -> str:
         last_timeout: httpx.TimeoutException | None = None
         for attempt in range(MAX_ATTEMPTS):
             self._throttle(url.host)
             try:
-                resp = self._client.get(url)
+                resp = self._client.get(url, headers=headers)
             except httpx.TimeoutException as exc:
                 last_timeout = exc
                 self._backoff(attempt)
@@ -257,14 +280,26 @@ def reset_default_client() -> None:
         _default_client = None
 
 
-def get_json(url: str, *, params: dict[str, Any] | None = None, ttl_s: int | None = None) -> Any:
+def get_json(
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    ttl_s: int | None = None,
+) -> Any:
     """Module-level convenience over the default client (LLD §3.2)."""
-    return get_default_client().get_json(url, params=params, ttl_s=ttl_s)
+    return get_default_client().get_json(url, params=params, headers=headers, ttl_s=ttl_s)
 
 
-def get_text(url: str, *, params: dict[str, Any] | None = None, ttl_s: int | None = None) -> str:
+def get_text(
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    ttl_s: int | None = None,
+) -> str:
     """Module-level convenience over the default client (LLD §3.2)."""
-    return get_default_client().get_text(url, params=params, ttl_s=ttl_s)
+    return get_default_client().get_text(url, params=params, headers=headers, ttl_s=ttl_s)
 
 
 __all__ = [

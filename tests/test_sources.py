@@ -30,6 +30,7 @@ from jobfinder.sources.base import (
 )
 from jobfinder.sources.greenhouse import GreenhouseSource
 from jobfinder.sources.http import HttpClient
+from jobfinder.sources.jsearch import JSearchSource
 from jobfinder.sources.lever import LeverSource
 from jobfinder.sources.remotive import RemotiveSource
 from jobfinder.sources.themuse import TheMuseSource
@@ -894,3 +895,115 @@ def test_themuse_page_error_is_isolated(tmp_path: Path) -> None:
 
     assert result.raw == []
     assert any("fetch failed" in note for note in result.errors)
+
+
+# --- JSearch adapter --------------------------------------------------------
+
+
+def _jsearch_handler() -> Callable[[httpx.Request], httpx.Response]:
+    body = json.loads((FIXTURES / "jsearch_search.json").read_text(encoding="utf-8"))
+    return lambda _request: httpx.Response(200, json=body)
+
+
+def _jsearch_source(client: HttpClient, **overrides) -> JSearchSource:
+    kwargs = {
+        "api_key": "rapid-key",
+        "query": "backend developer",
+        "country": "ca",
+        "num_pages": 1,
+        "client": client,
+        "now": lambda: _NOW,
+    }
+    kwargs.update(overrides)
+    return JSearchSource(**kwargs)
+
+
+def test_jsearch_skips_without_key(tmp_path: Path) -> None:
+    """Missing the RapidAPI key disables the source cleanly — no request, no error."""
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("no request should be made without a key")
+
+    source = _jsearch_source(_mock_client(tmp_path, handler), api_key=None)
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert result.raw == []
+    assert result.fetched == 0
+    assert any("skipped" in note for note in result.errors)
+
+
+def test_jsearch_sends_auth_headers(tmp_path: Path) -> None:
+    """The RapidAPI key/host travel as request headers (new HttpClient support)."""
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["key"] = request.headers.get("X-RapidAPI-Key", "")
+        seen["host"] = request.headers.get("X-RapidAPI-Host", "")
+        return httpx.Response(200, json={"status": "OK", "data": []})
+
+    source = _jsearch_source(_mock_client(tmp_path, handler))
+    source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert seen == {"key": "rapid-key", "host": "jsearch.p.rapidapi.com"}
+
+
+def test_jsearch_fetch_parses_fixture(tmp_path: Path) -> None:
+    source = _jsearch_source(_mock_client(tmp_path, _jsearch_handler()))
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert result.source == "jsearch"
+    assert all(isinstance(rp, RawPosting) and rp.source == "jsearch" for rp in result.raw)
+    # 4 postings; the id-less one is skipped + noted.
+    assert result.fetched == 4
+    assert any("no job_id" in note for note in result.errors)
+
+
+def test_jsearch_recency_prefilter_drops_stale(tmp_path: Path) -> None:
+    source = _jsearch_source(_mock_client(tmp_path, _jsearch_handler()))
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    # Fresh (js-5001) and date-unknown (js-5003) survive; April-dated js-5002 drops.
+    assert {rp.source_id for rp in result.raw} == {"js-5001", "js-5003"}
+    assert result.kept_after_recency == 2
+
+
+def test_jsearch_normalize_round_trip(tmp_path: Path) -> None:
+    source = _jsearch_source(_mock_client(tmp_path, _jsearch_handler()))
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+    by_id = {rp.source_id: rp for rp in result.raw}
+
+    fresh = normalize(by_id["js-5001"], company_hint=None, now=_NOW)
+    assert fresh.company == "Maple Cloud"
+    assert fresh.title == "Senior Backend Software Engineer"
+    assert fresh.location_bucket is LocationBucket.TORONTO  # "Toronto, ON, CA"
+    assert "Java" in fresh.description
+    assert fresh.url == "https://www.linkedin.com/jobs/view/js-5001"
+    assert fresh.date_unknown is False
+
+    remote = normalize(by_id["js-5003"], company_hint=None, now=_NOW)
+    assert remote.location_bucket is LocationBucket.REMOTE  # job_is_remote flag
+    assert remote.date_unknown is True  # no posting date
+
+
+def test_jsearch_fetch_error_is_isolated(tmp_path: Path) -> None:
+    client = _mock_client(tmp_path, lambda _r: httpx.Response(500, json={"error": "boom"}))
+    source = _jsearch_source(client)
+
+    result = source.fetch(max_age_days=21, throttle_s=1.0)
+
+    assert result.raw == []
+    assert any("fetch failed" in note for note in result.errors)
+
+
+@pytest.mark.parametrize(
+    ("max_age_days", "expected"),
+    [(1, "today"), (3, "3days"), (7, "week"), (21, "month"), (31, "month"), (60, "all")],
+)
+def test_jsearch_date_posted_buckets(max_age_days: int, expected: str) -> None:
+    from jobfinder.sources.jsearch import _date_posted
+
+    assert _date_posted(max_age_days) == expected

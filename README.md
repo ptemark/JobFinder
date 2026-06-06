@@ -1,8 +1,8 @@
 # Job Finder
 
 A local, single-user tool that discovers recent **backend software-engineering** job
-postings from public ATS feeds (Greenhouse, Lever, Ashby) and keyless job aggregators
-(Remotive, The Muse, and optionally Adzuna), filters them to your targeting criteria,
+postings from public ATS feeds (Greenhouse, Lever, Ashby) and job aggregators (Remotive,
+The Muse, and optionally Adzuna and JSearch), filters them to your targeting criteria,
 scores each posting against your full résumé using free local embeddings, and presents
 the ranked matches in a local web dashboard. **You apply manually** via the linked
 posting — the tool never submits an application.
@@ -140,23 +140,30 @@ way to "find anything that fits" rather than naming companies:
 | **Remotive** | Remote software-dev roles (great for the remote bucket) | none |
 | **The Muse** | Software-engineering roles across Vancouver, Toronto, Ottawa, Montreal + remote | optional `THEMUSE_API_KEY` raises the rate limit |
 | **Adzuna** | Broad Canadian aggregator | requires both keys (below) |
+| **JSearch** | Broadest — aggregates Google for Jobs (Indeed, LinkedIn, Glassdoor, ZipRecruiter) | requires a RapidAPI key (below); skipped when absent |
 
 The pipeline's role gate + résumé scoring narrow every aggregator's results down to
 relevant backend roles, so they're safe to run wide.
 
 ### `.env` — optional secrets
 
-Used for the **optional** Adzuna aggregator and the **optional** The Muse key. Leave any
-blank to run without them — Adzuna is skipped cleanly when its keys are absent, and The
-Muse simply runs key-free at a lower rate limit. Both Adzuna keys are required for it to
-enable. Free-tier keys: Adzuna <https://developer.adzuna.com/>, The Muse
-<https://www.themuse.com/developers/api/v2>.
+Used for the optional aggregators. Leave any blank to run without them — Adzuna and
+JSearch are skipped cleanly when their keys are absent, and The Muse simply runs key-free
+at a lower rate limit. Both Adzuna keys are required for it to enable. Free-tier keys:
+Adzuna <https://developer.adzuna.com/>, The Muse
+<https://www.themuse.com/developers/api/v2>, JSearch
+<https://rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch>.
 
 ```dotenv
 ADZUNA_APP_ID=
 ADZUNA_APP_KEY=
 THEMUSE_API_KEY=
+JSEARCH_API_KEY=
 ```
+
+JSearch query tuning (optional `JOBFINDER_`-style env vars): `JSEARCH_QUERY` (default
+`backend developer`), `JSEARCH_COUNTRY` (default `ca`), and `JSEARCH_NUM_PAGES` (default
+`1`; each page ≈10 results — raise it for more coverage at the cost of more quota).
 
 Operational tunables (throttle, cache TTL, paths) can be overridden with `JOBFINDER_*`
 environment variables, but the defaults are sensible.

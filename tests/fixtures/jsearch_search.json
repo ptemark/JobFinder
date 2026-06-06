@@ -1,0 +1,52 @@
+{
+  "status": "OK",
+  "request_id": "fixture",
+  "data": [
+    {
+      "job_id": "js-5001",
+      "employer_name": "Maple Cloud",
+      "job_title": "Senior Backend Software Engineer",
+      "job_description": "Build backend services in Java and Kotlin on AWS.",
+      "job_apply_link": "https://www.linkedin.com/jobs/view/js-5001",
+      "job_city": "Toronto",
+      "job_state": "ON",
+      "job_country": "CA",
+      "job_is_remote": false,
+      "job_posted_at_datetime_utc": "2026-05-26T09:00:00.000Z"
+    },
+    {
+      "job_id": "js-5002",
+      "employer_name": "OldPost Inc",
+      "job_title": "Backend Developer",
+      "job_description": "Stale posting that should drop out on recency.",
+      "job_apply_link": "https://www.indeed.com/viewjob?jk=js-5002",
+      "job_city": "Vancouver",
+      "job_state": "BC",
+      "job_country": "CA",
+      "job_is_remote": false,
+      "job_posted_at_datetime_utc": "2026-04-01T12:00:00.000Z"
+    },
+    {
+      "job_id": "js-5003",
+      "employer_name": "Harbour Labs",
+      "job_title": "Software Engineer, Backend",
+      "job_description": "Remote backend role. No posting date in this record.",
+      "job_apply_link": "https://www.glassdoor.com/job-listing/js-5003",
+      "job_city": null,
+      "job_state": null,
+      "job_country": "CA",
+      "job_is_remote": true
+    },
+    {
+      "employer_name": "Ghost Co",
+      "job_title": "Backend Engineer (no id)",
+      "job_description": "Should be skipped: no job_id field.",
+      "job_apply_link": "https://example.com/ghost",
+      "job_city": "Calgary",
+      "job_state": "AB",
+      "job_country": "CA",
+      "job_is_remote": false,
+      "job_posted_at_datetime_utc": "2026-05-28T08:00:00.000Z"
+    }
+  ]
+}

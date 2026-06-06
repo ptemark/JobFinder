@@ -82,6 +82,20 @@ class Settings(BaseSettings):
     # ceiling when present. The source is always enabled.
     themuse_api_key: str | None = Field(default=None, alias="THEMUSE_API_KEY")
 
+    # Optional JSearch (RapidAPI) key + query tunables (.env only). JSearch
+    # aggregates Google for Jobs (Indeed, LinkedIn, Glassdoor, ZipRecruiter); the
+    # key is required, so the source skips cleanly when it is absent (like Adzuna).
+    jsearch_api_key: str | None = Field(default=None, alias="JSEARCH_API_KEY")
+    jsearch_query: str = Field(default="backend developer", alias="JSEARCH_QUERY")
+    jsearch_country: str = Field(default="ca", alias="JSEARCH_COUNTRY")
+    # Each page is ~10 results; kept to 1 to respect the limited free RapidAPI tier.
+    jsearch_num_pages: int = Field(default=1, ge=1, alias="JSEARCH_NUM_PAGES")
+
+    @property
+    def jsearch_enabled(self) -> bool:
+        """True only when the JSearch RapidAPI key is present."""
+        return bool(self.jsearch_api_key)
+
     @property
     def config_dir(self) -> Path:
         return self.base_dir / "config"

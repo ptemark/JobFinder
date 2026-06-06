@@ -319,6 +319,34 @@ def _extract_remotive(payload: dict, company_hint: str | None) -> _Fields:
     )
 
 
+def _jsearch_location(payload: dict) -> str:
+    """Assemble a free-text location from JSearch's split city/state/country.
+
+    A 2-letter ``CA`` country is expanded to "Canada" so non-metro Canadian
+    postings still match the other-Canada bucket (a bare "CA" would not), keeping
+    eligible roles from being dropped as out-of-region (LLD §4.1.4, §5).
+    """
+    country = payload.get("job_country") or ""
+    if isinstance(country, str) and country.strip().upper() == "CA":
+        country = "Canada"
+    parts = [payload.get("job_city"), payload.get("job_state"), country]
+    return ", ".join(p for p in parts if isinstance(p, str) and p.strip())
+
+
+def _extract_jsearch(payload: dict, company_hint: str | None) -> _Fields:
+    """Map a JSearch ``/search`` result object to common fields."""
+    return _Fields(
+        title=payload.get("job_title") or "",
+        # JSearch bodies are largely plain text but may carry stray markup; strip.
+        description=html_to_text(payload.get("job_description") or ""),
+        company=payload.get("employer_name") or company_hint or "",
+        location_raw=_jsearch_location(payload),
+        is_remote=bool(payload.get("job_is_remote")),  # explicit remote flag
+        url=payload.get("job_apply_link") or "",
+        posted_at=parse_date(payload.get("job_posted_at_datetime_utc"), "jsearch"),
+    )
+
+
 def _extract_themuse(payload: dict, company_hint: str | None) -> _Fields:
     """Map a The Muse public-jobs result object to common fields."""
     company = payload.get("company")
@@ -351,6 +379,7 @@ _EXTRACTORS = {
     "adzuna": _extract_adzuna,
     "remotive": _extract_remotive,
     "themuse": _extract_themuse,
+    "jsearch": _extract_jsearch,
 }
 
 

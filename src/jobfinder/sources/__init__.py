@@ -4,8 +4,8 @@ Importing this package imports each concrete adapter so it self-registers in the
 :data:`~jobfinder.sources.base.SOURCES` registry at import time (LLD §3.1).
 """
 
-from jobfinder.sources import adzuna, ashby, greenhouse, lever, remotive, themuse
+from jobfinder.sources import adzuna, ashby, greenhouse, jsearch, lever, remotive, themuse
 
 # Re-exported so the imports are not flagged unused: importing them is what
 # registers the adapters in the SOURCES registry.
-__all__ = ["adzuna", "ashby", "greenhouse", "lever", "remotive", "themuse"]
+__all__ = ["adzuna", "ashby", "greenhouse", "jsearch", "lever", "remotive", "themuse"]
