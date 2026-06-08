@@ -35,7 +35,10 @@ These live in `config/profile.yaml` so they can be changed without code edits.
 
 ## 3. Non-goals / explicit guardrails (DO NOT do these)
 
-- **No auto-apply.** Never POST to any application-submission endpoint. Read-only.
+- **No auto-apply.** Never POST to any application-submission endpoint. Read-only
+  against job sources. (The one sanctioned outbound *write* is the optional
+  application-tracking sync to the user's **own** Google Sheet — see §15 — which records
+  that the user applied; it never submits an application to an employer.)
 - **No scraping of sites that prohibit it.** Use only public JSON ATS feeds and
   official APIs with permissive terms (see §5). No headless-browser scraping of
   LinkedIn/Indeed. No circumventing rate limits or bot protection.
@@ -145,9 +148,16 @@ A posting is **eligible** if ALL hold:
   it rather than silently lose it), and sorted below dated postings of equal score.
 - Title or description indicates a backend SWE/developer role (keyword + embedding gate).
 - `location_bucket` in {remote, vancouver, toronto, other_canada}; non-Canada remote
-  excluded unless explicitly "remote (Canada)" / "remote (North America)".
+  excluded. **Remote is Canada-eligible only when there is a positive Canada/North-America
+  signal** — `is_remote` plus an explicit `canada | remote (north america) | anywhere`
+  cue — OR no country is named at all. A remote posting that names a *non-Canada* country
+  or region (e.g. "Remote — US", "Remote (United States)", "Remote, EMEA", "US-based",
+  "Remote LATAM") buckets `other` and is excluded. Tightened from the prior rule, which
+  only excluded the narrow "US only / EMEA" phrasings and let plain "Remote — US"
+  through (see §7 location gate; LLD §4.1).
 - `seniority` not in {junior, intern}; not a pure manager/director role.
-- Not already marked `dismissed` by the user.
+- Not already marked `dismissed` **or `applied`** by the user. (`applied` jobs move to
+  their own tab — §9 — so the main ranked list shows only roles still to act on.)
 
 Eligible postings are ranked; ineligible ones are stored but hidden by default
 (viewable via a filter toggle, for debugging false negatives).
@@ -194,6 +204,11 @@ Eligible postings are ranked; ineligible ones are stored but hidden by default
 - `GET /` serves the SPA. Backend endpoints: `/api/jobs` (filter/sort params),
   `/api/jobs/{id}` (detail + score breakdown), `POST /api/jobs/{id}/status`
   (mark interested / applied / dismissed), `POST /api/poll` (trigger a refresh).
+- **Tabs:** the dashboard has two top-level tabs — **All** (the active ranked list,
+  excluding `applied` and `dismissed`) and **Applied** (only jobs the user has marked
+  `applied`, most-recently-applied first). Marking a job `applied` removes it from **All**
+  and surfaces it under **Applied**, so the working list shows only roles still to act on
+  (mirrors the existing `dismissed` hide).
 - **List view:** ranked cards — score, title, company, location bucket badge,
   **posted date + "Xd ago" age badge** (prominent, since recency matters), top
   matching skills, "new since last poll" indicator.
@@ -201,6 +216,10 @@ Eligible postings are ranked; ineligible ones are stored but hidden by default
   (e.g. ≤7d / ≤14d / ≤21d). Sort toggle: **best match** (default) or **newest first**.
 - **Detail view:** full description, score breakdown, direct apply link (opens posting).
 - **Status tracking:** per-job status (new/interested/applied/dismissed) persisted in DB.
+  Marking a job `applied` also triggers the optional Google Sheet tracking sync (§15).
+- **Styling:** a polished, modern card/tab visual treatment — denser, clearer hierarchy,
+  refined typography and badges — without becoming bulky (no heavier framework; still the
+  single static page + vanilla JS + plain CSS of HLD §3.5).
 - Runs at `http://localhost:8000`. No auth (local only). No external calls from the
   browser; frontend talks only to local backend.
 
@@ -285,6 +304,23 @@ before moving on. "Done" = criteria met AND `pytest` green AND `ruff` clean.
 - **Accept:** killing network mid-poll leaves DB consistent; README lets a fresh
   clone reach a running dashboard.
 
+### M7 — Applied tracking, Sheets sync, remote filter & UI polish
+*(Post-v1 enhancement milestone, added after the M1–M6 product shipped. Targets the
+four user-requested improvements; see §7, §9, §15 and tasks T29–T33.)*
+- **Stricter remote filter:** non-Canada remote postings ("Remote — US", "Remote, EMEA",
+  etc.) bucket `other` and drop out of the eligible list (§7).
+- **Applied tab:** `applied` jobs are hidden from the default list and shown under a
+  dedicated tab; the default listing now hides `applied` as well as `dismissed` (§9).
+- **Google Sheet sync:** marking a job `applied` appends a row (Company, Position, blank
+  Response cell shaded **yellow**, Link) to the user's tracking sheet, deduped, skipped
+  cleanly when unconfigured (§15).
+- **UI restyle:** a more polished, non-bulky card/tab visual treatment (§9).
+- **Accept:** a US-only remote fixture buckets `other` and is excluded; marking a job
+  `applied` removes it from **All**, shows it under **Applied**, and (when configured)
+  appends exactly one correctly-formatted row to a fake Sheets endpoint — with no
+  credentials, the status write still succeeds and the sync is skipped; the dashboard
+  renders the two tabs with the new styling. All tests green, `ruff` clean.
+
 ## 13. Definition of Done (overall)
 
 - `git clone` → follow README → `jobfinder poll` → `jobfinder serve` shows a ranked
@@ -302,3 +338,45 @@ before moving on. "Done" = criteria met AND `pytest` green AND `ruff` clean.
   insert a clearly-marked `# TODO verify` placeholder and continue; surface all such
   TODOs in the README so the user can confirm.
 - Keep a `PROGRESS.md` updated with milestone status each iteration.
+
+## 15. Application tracking — Google Sheet sync (M7)
+
+When the user marks a job **`applied`** in the dashboard, the tool appends a row to the
+user's personal job-search tracking spreadsheet so the sheet stays in lockstep with the
+app — no manual re-entry.
+
+**Target sheet (the user's existing tracker).** Columns, in order:
+`Company | Position | Response | Link`. The **Response** column is the user's
+outcome tracker, *color-coded*: a freshly-applied row is left blank with the
+**Response cell shaded yellow** ("applied, waiting to hear back"); the user later recolors
+it as they hear back. So the sync writes:
+- **Company** ← job company
+- **Position** ← job title
+- **Response** ← *empty text, cell background set to yellow* (the convention's "waiting" state)
+- **Link** ← canonical posting URL
+
+**Behavior:**
+- Server-side only. The browser never calls Google; the local backend performs the write
+  when it receives the `applied` status update (preserves "browser talks only to the local
+  backend", §9). The status write is the source of truth — it **always** persists; the
+  Sheet sync is a **best-effort** side effect (a Sheets failure is logged and surfaced, but
+  never rolls back the status or 500s the request).
+- **Idempotent:** before appending, check whether a row with the same **Link** already
+  exists; if so, skip (re-marking `applied`, or a retry, never duplicates a row).
+- **Opt-in & graceful:** active only when Google credentials + a sheet id are configured
+  (see below). With them absent, marking `applied` still works locally and the sync is
+  skipped cleanly with an info note — exactly the Adzuna-key pattern (§5, M5).
+
+**Auth & config (no secrets in code; $0).** A **Google Cloud service account** (free):
+its JSON key path and the target sheet id come from `.env`
+(`GOOGLE_SHEETS_CREDENTIALS`, `JOB_TRACKER_SHEET_ID`, optional worksheet/`gid`); the key
+file is **gitignored**. The user shares the sheet (Editor) with the service account's
+email once. The implementation signs a service-account JWT with the lightweight
+`google-auth` library to obtain an access token, then calls the **Sheets REST API**
+(`spreadsheets:batchUpdate` with an `appendCells` request that sets the four cell values
+**and** the Response cell's yellow `backgroundColor` in one call) over the **existing
+`httpx`** client — no heavyweight Google SDK, keeping footprint minimal (HLD §3.7).
+
+This is the only outbound write the tool performs, and it targets the **user's own**
+spreadsheet — it is **not** an application submission (the §3 no-auto-apply guardrail
+still holds in full).

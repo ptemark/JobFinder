@@ -45,6 +45,7 @@ jobfinder/
     store.py                    # SQLite DAL (schema, upserts, queries)
     pipeline.py                 # orchestrates poll
     discovery.py                # extract board tokens from aggregator URLs
+    sheets.py                   # M7: Google Sheet application-tracker sync (google-auth + httpx)
     web/
       __init__.py
       app.py                    # FastAPI app factory
@@ -63,6 +64,7 @@ jobfinder/
     test_store.py
     test_sources.py             # adapters parse fixtures (no network)
     test_api.py
+    test_sheets.py              # M7: Sheets sync against a mocked transport (no network)
   data/                         # gitignored: jobs.db, logs/, http_cache/
 ```
 
@@ -258,15 +260,28 @@ def bucket_location(location_raw: str, is_remote: bool) -> tuple[LocationBucket,
 def infer_seniority(title: str, description: str) -> Seniority
 ```
 
-### 4.1 `bucket_location` rules (ordered)
-1. Remote signal (`is_remote` true, or `/remote/i` in location) **and** Canada-eligible
-   (`/canada|remote\s*-\s*(canada|north america)|anywhere/i`, or no country exclusion) →
-   `REMOTE`. Explicit non-Canada-only remote (`/remote.*(us only|united states only|emea)/i`) → `OTHER`.
+### 4.1 `bucket_location` rules (ordered) — **tightened in M7 (T29)**
+1. Remote signal = `is_remote` true OR `/remote/i` in location. When remote:
+   a. **Positive Canada signal** (`/canada|remote\s*-?\s*(canada|north america)|anywhere/i`,
+      or a Canadian city/`bc`/`on` cue) → `REMOTE`.
+   b. **Positive non-Canada signal** — a remote posting that names *any* non-Canada
+      country/region → `OTHER` (still remote). This is the M7 change: replace the narrow
+      `/remote.*(us only|united states only|emea)/i` with a broad non-Canada matcher,
+      e.g. `/\b(us|usa|u\.s\.|united states|emea|latam|apac|uk|europe|india|us-based|us only)\b/i`
+      (word-boundary; guard against matching Canadian provinces). So "Remote — US",
+      "Remote (United States)", "Remote, EMEA", "US-based — Remote" all bucket `OTHER`.
+   c. **No country named at all** → `REMOTE` (Canada-eligible by default, unchanged — a
+      bare "Remote" stays in scope; the debug/include-ineligible toggle still surfaces
+      anything wrongly dropped, HLD §3.4).
 2. `/vancouver|, ?bc|british columbia/i` → `VANCOUVER`.
 3. `/toronto|, ?on|ontario/i` → `TORONTO`.
 4. `/canada|montreal|calgary|ottawa|…/i` → `OTHER_CANADA`.
 5. else → `OTHER`.
-(`is_remote` returned alongside.)
+(`is_remote` returned alongside.) **Order matters:** check the non-Canada matcher (1b)
+*before* defaulting to `REMOTE` (1c), and ensure the Canada signal (1a) wins when both a
+Canada cue and a stray token co-occur (e.g. "Remote - Canada & US"). Tests cover
+"Remote — US", "Remote (United States)", "Remote, EMEA", "US-based", "Remote LATAM"
+→ `OTHER`, and "Remote - Canada", "Remote (North America)", bare "Remote" → `REMOTE`.
 
 ### 4.2 `infer_seniority` rules (ordered; first match wins)
 - `/principal|director|vp|head of|manager\b/i` → treat as out-of-scope IC check upstream
@@ -469,8 +484,13 @@ FastAPI app; binds `127.0.0.1:8000`; serves `static/` at `/`.
 |---|---|---|---|
 | GET | `/api/jobs` | `bucket, source, seniority, min_score, status, max_age_days, sort∈{best,newest}, include_ineligible, limit, offset` | `JobListResponse` |
 | GET | `/api/jobs/{id}` | — | `JobDetailResponse` (full desc + breakdown) |
-| POST | `/api/jobs/{id}/status` | `{ "state": "interested|applied|dismissed|new" }` | `{ "ok": true }` |
+| POST | `/api/jobs/{id}/status` | `{ "state": "interested\|applied\|dismissed\|new" }` | `{ "ok": true, "sheet_synced": bool }` |
 | POST | `/api/poll` | — | `202 {"run_id": n}` (spawns pipeline subprocess, non-blocking) |
+
+`POST .../status` with `state=applied` **also** fires the Sheets sync (§16): the status is
+written first (authoritative), then `sheets.sync_applied(job)` runs best-effort — its
+outcome surfaces as `sheet_synced` (false when unconfigured or on a handled Sheets error),
+but a Sheets failure never 500s the status write. Other states don't call Sheets.
 | GET | `/api/runs/latest` | — | last run summary + counts |
 
 ### 9.2 Response schemas (`schemas.py`)
@@ -493,12 +513,31 @@ class JobDetail(JobCard):
 - Default sort `best` = `scores.final DESC, posted_at DESC NULLS LAST`.
 - `newest` = `posted_at DESC NULLS LAST, scores.final DESC`.
 - `include_ineligible=false` by default (debug toggle to surface filtered-out jobs).
+- **Default listing hides `applied` and `dismissed`** (M7/T30): when no explicit `status`
+  filter is given, `_job_where` excludes both states (extend the existing dismissed-hide
+  in `store._job_where` from `!= dismissed` to `NOT IN (dismissed, applied)`; add a
+  module constant `_APPLIED_STATE` beside `_DISMISSED_STATE`). An explicit `status=applied`
+  still returns them — that query backs the **Applied** tab. `get_job_detail` (by id) keeps
+  an applied/dismissed job reachable in detail. `StatusResponse` gains `sheet_synced: bool`.
 
 ### 9.3 Frontend (`static/`)
 - Single `index.html` + vanilla `app.js` (fetch → render cards) + `styles.css`. No build
   step (HLD §3.5). Card shows score, title, company, location badge, **"Xd ago"** age
   badge, matched-skill chips, NEW indicator, apply link. Sidebar filters + sort toggle.
   Status buttons POST and optimistically update.
+- **Tabs (M7/T33):** two tab buttons above the list — **All** (default) and **Applied** —
+  in a `role="tablist"`. Switching tabs re-queries `/api/jobs`: **All** sends no `status`
+  (backend hides applied+dismissed); **Applied** sends `status=applied` with `sort=newest`.
+  On a successful `applied` POST the card is optimistically removed from **All** (the same
+  remove-on-dismiss path already in `handleStatusClick`, extended to `applied`); an
+  `applied` confirmation reflects `sheet_synced` (e.g. a small "�added to sheet" / "sheet
+  not configured" note). Keep all rendering via `createElement`/`textContent` (no
+  `innerHTML`), `handle`-prefixed listeners, no `console.log`.
+- **Restyle (M7/T33):** refresh `styles.css` only — tighter card grid, clearer type scale,
+  refined badges/score chip, sticky tab bar, subtle elevation/hover; stay within the
+  existing CSS-variable palette and the `:focus-visible` ring + text-on-every-badge
+  accessibility rules. No new assets, no framework, no build step (keeps the footprint
+  claim in HLD §3.5 intact). Colour never the sole signal.
 
 ---
 
@@ -542,11 +581,22 @@ ashby:      [{token: "acme", name: "Acme", verified: false}]
 ```
 ADZUNA_APP_ID=
 ADZUNA_APP_KEY=
+# Optional M7 application-tracker sync (Google Sheet). Absent → marking "applied"
+# still works locally and the sync is skipped. The key file is gitignored.
+GOOGLE_SHEETS_CREDENTIALS=        # path to the service-account JSON key, e.g. config/google-service-account.json
+JOB_TRACKER_SHEET_ID=            # the spreadsheet id from its URL (.../d/<THIS>/edit)
+JOB_TRACKER_SHEET_GID=           # optional worksheet gid (default: first sheet)
 ```
+`.gitignore` must also cover `config/google-service-account.json` (or whatever path the
+user sets) and the cached token, alongside the existing `config/resume.*` / `.env`.
 
 ### 11.4 `settings.py` (pydantic-settings)
 Resolves paths, reads `.env`, exposes `throttle_s`, `cache_ttl_s`, db/log paths,
 `embed_model`. Missing optional secret → corresponding source disabled, logged once.
+**M7:** add `google_sheets_credentials: Path | None`, `job_tracker_sheet_id: str | None`,
+`job_tracker_sheet_gid: int | None` (env aliases above). A `sheets_enabled` helper is true
+only when both the credentials path *and* the sheet id are present — the §16 sync checks
+it and no-ops (info note) otherwise, exactly like the Adzuna-key gate.
 
 ---
 
@@ -573,7 +623,9 @@ Resolves paths, reads `.env`, exposes `throttle_s`, `cache_ttl_s`, db/log paths,
 | `test_filters.py` | stale, non-backend, out-of-location, junior, people-manager all rejected with correct reason; `date_unknown` passes |
 | `test_score.py` | determinism (fixed seed/model) and **ordering**: senior remote Java/AWS role outranks junior onsite frontend role (spec §12 M3); skill weight makes a Java/AWS role beat a higher-semantic non-stack role |
 | `test_store.py` | upsert idempotency (same job twice → one row, `first_seen_at` preserved); cascade delete; prune by `last_seen_at`; query filter/sort SQL |
-| `test_api.py` | `/api/jobs` filter+sort params; status POST persists; `include_ineligible` toggle; new-since-last-poll flag |
+| `test_api.py` | `/api/jobs` filter+sort params; status POST persists; `include_ineligible` toggle; new-since-last-poll flag; **(M7)** default list hides `applied`+`dismissed`, `status=applied` returns the Applied tab, `applied` POST returns `sheet_synced` and (patched) calls `sheets.sync_applied` once |
+| `test_normalize.py` *(M7)* | `bucket_location` tightening: "Remote — US"/"Remote (United States)"/"Remote, EMEA"/"US-based"/"Remote LATAM" → `OTHER`; "Remote - Canada"/"Remote (North America)"/bare "Remote" → `REMOTE`; "Remote - Canada & US" → `REMOTE` (Canada signal wins) |
+| `test_sheets.py` *(M7)* | append builds the right `appendCells` request (Company/Position/Link values + **yellow** Response `backgroundColor`); idempotency skips when the Link is already present; unconfigured → no request, returns "skipped"; a Sheets HTTP error is caught and reported, never raised — all via `httpx.MockTransport`, no network, creds faked |
 
 Gate: `pytest` green **and** `ruff` clean = milestone done (spec §12).
 
@@ -595,8 +647,12 @@ PyYAML>=6.0,<7.0
 pypdf>=4.0,<6.0
 pdfplumber>=0.11,<1.0     # fallback resume extraction
 python-docx>=1.1,<2.0
+google-auth>=2.29,<3.0    # M7: service-account JWT → OAuth2 token for the Sheets sync
 pytest>=8.0 ; ruff>=0.4   # dev
 ```
+M7 adds **only** `google-auth` (token signing); the Sheets REST calls reuse the existing
+`httpx` client — the heavyweight `google-api-python-client` SDK is deliberately avoided
+(HLD §3.7 decision D13). No new vector/native deps.
 Footprint note: `sentence-transformers` (via torch) is the heavyweight; it is the one
 justified by the core matching requirement. Everything else is light. No native vector
 extension in the default install (numpy brute-force cosine; `sqlite-vec` is the
@@ -608,3 +664,64 @@ documented scale-out per HLD §4.2).
 M1 settings/models/store(+DDL) → M2 http/greenhouse/lever/normalize → M3 filters/score
 → M4 web/api/static → M5 ashby/adzuna/discovery/cache+throttle → M6 cli polish/export/
 prune/README. Each milestone ships with its fixtures and tests before the next begins.
+**M7 (post-v1):** T29 remote-filter tightening (normalize) → T30 applied-hide + Applied-tab
+query (store/api) → T31 `sheets.py` client → T32 settings/.env + wire sync into the status
+endpoint → T33 frontend tabs + restyle. T29/T30/T33 are independent of T31/T32, so the
+filter+tab+UI work lands even if the Sheets credential isn't ready.
+
+---
+
+## 16. Sheets sync (`sheets.py`) — M7 application tracker
+
+Pure-ish module: one public entry point, no global state, fully mockable.
+
+```python
+def sync_applied(job: JobRowOrCard, *, settings: Settings,
+                 client: HttpClient | None = None, now: datetime | None = None) -> SyncResult
+```
+
+`SyncResult` = `{"status": "appended"|"skipped"|"duplicate"|"error", "detail": str}`.
+The API maps `status == "appended"` → `sheet_synced=True`, everything else → `False`
+(only "error" is a real failure; it is logged, never raised).
+
+### 16.1 Flow
+1. **Gate:** if `not settings.sheets_enabled` → return `skipped` (info note, no network) —
+   the Adzuna-key pattern (§3.6/§11.4).
+2. **Token:** build service-account credentials from `settings.google_sheets_credentials`
+   via `google.oauth2.service_account.Credentials.from_service_account_file(..., scopes=
+   ["https://www.googleapis.com/auth/spreadsheets"])`; `creds.refresh(Request())` to mint
+   an OAuth2 access token (the one thing `google-auth` does for us). Cache the creds object
+   across calls; it auto-refreshes near expiry.
+3. **Idempotency read:** `GET .../v4/spreadsheets/{id}/values/{tab}!D:D` (the Link column;
+   `tab` resolved from `gid` or defaulting to the first sheet's title) through the existing
+   `HttpClient` with the `Authorization: Bearer <token>` header. If `job.url` is already in
+   the returned column → return `duplicate` (no append).
+4. **Append + format (one call):** `POST .../v4/spreadsheets/{id}:batchUpdate` with an
+   `appendCells` request on the target sheet:
+   ```json
+   {"requests": [{"appendCells": {
+     "sheetId": <gid>,
+     "fields": "userEnteredValue,userEnteredFormat.backgroundColor",
+     "rows": [{"values": [
+       {"userEnteredValue": {"stringValue": "<company>"}},
+       {"userEnteredValue": {"stringValue": "<title>"}},
+       {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 1, "blue": 0}}},
+       {"userEnteredValue": {"stringValue": "<url>"}}
+     ]}]
+   }}]}
+   ```
+   The third cell (Response) carries **no value, only the yellow background** — the user's
+   "applied, waiting to hear back" convention (spec §15). One request sets all four cells
+   atomically. Return `appended`.
+5. **Bulkhead:** wrap the network in `try/except (httpx.HTTPError, RefreshError, ...)`;
+   on failure return `error` with the message (the API layer logs it). Never raises into
+   the request handler — the status write already committed.
+
+### 16.2 Notes
+- **Column order is the contract** (`Company | Position | Response | Link` = A|B|C|D);
+  `appendCells` writes left-to-right from column A, so the Response cell is always the 3rd
+  value. README documents not to reorder the sheet's columns.
+- **Yellow** = `{red:1, green:1, blue:0}` (RGB 255,255,0); a `SHEETS_APPLIED_RGB` module
+  constant keeps the convention in one place, swappable if the user prefers a softer shade.
+- All testing uses `httpx.MockTransport` with a faked token (monkeypatch the
+  creds/refresh) — zero network, deterministic, free (spec §14 test rule).

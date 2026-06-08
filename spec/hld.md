@@ -27,10 +27,12 @@ linked posting. The system never auto-applies.
 - Low operational burden: one scheduled command keeps data current.
 
 ### 1.3 Non-goals
-- No auto-submission of applications (read-only against application endpoints).
+- No auto-submission of applications (read-only against application endpoints). The sole
+  outbound *write* is the optional tracking sync to the user's **own** Google Sheet
+  (§3.7) — recording that the user applied, never submitting to an employer.
 - No multi-user, no multi-tenancy, no remote hosting, no authentication.
 - No scraping of sites that prohibit it; only public JSON ATS feeds + permissive APIs.
-- No paid services or paid API tiers.
+- No paid services or paid API tiers (the Google Sheets API and a service account are free).
 
 ### 1.4 Context (system boundary)
 
@@ -44,10 +46,15 @@ APIs ───┼──HTTP(S) GET──▶ [ Source adapters ] ──▶ [ Norm
 Lever,  │                                        [ Scorer (embeddings) ]┘  │   │
 Ashby,  │                                                              ▼  │   │
 Adzuna) │   Browser ◀──localhost HTTP──▶ [ FastAPI dashboard ] ────────────┘   │
-        │                                                                     │
+        │                                    │ mark "applied"                  │
+Google  │                                    ▼                                 │
+Sheets ◀┼──HTTPS write (append row)──── [ Sheets sync ]                        │
+ API    │                                                                     │
         └─────────────────────────────────────────────────────────────────────┘
 ```
-The only egress is outbound HTTPS to job sources. The dashboard binds to localhost.
+Egress is outbound HTTPS to job sources (reads) **plus** an optional write to the user's
+own Google Sheet when a job is marked `applied` (§3.7). The dashboard binds to localhost;
+the browser never calls Google — the Sheets write is server-side.
 
 ---
 
@@ -97,7 +104,8 @@ dashboard write overlapping (see §4.4).
 | **Scorer** | Embed resume + jobs; compute final score + breakdown | `sentence-transformers` |
 | **Filter** | Apply hard eligibility gates (recency, location, role, seniority) | — |
 | **Pipeline** | Orchestrate poll: sources → normalize → filter → store → score | — |
-| **Web/dashboard** | Serve ranked results, filters, status updates, manual poll | `FastAPI` + `uvicorn` |
+| **Web/dashboard** | Serve ranked results (All / Applied tabs), filters, status updates, manual poll | `FastAPI` + `uvicorn` |
+| **Sheets sync** | On `applied`, append a row to the user's tracking sheet (best-effort, opt-in) | `google-auth` + `httpx` |
 | **CLI** | `poll`, `serve`, `add-company`, `export` | `typer` |
 | **Config** | Load profile, companies, weights, secrets | `pydantic-settings`, `PyYAML` |
 
@@ -134,7 +142,10 @@ cost is low and justified.
   has a smaller surface than bs4+lxml for our single use (strip tags, get text).
 - **Location bucketing:** rule-based mapping of `location_raw`/remote flags →
   {remote, vancouver, toronto, other_canada, other}. Conservative: only confident
-  Canada-eligible remote is bucketed `remote`.
+  Canada-eligible remote is bucketed `remote`. **A remote posting that names any
+  non-Canada country/region (US, EMEA, LATAM, …) buckets `other`** — the rule excludes by
+  positive non-Canada signal, not just the narrow "US only/EMEA" phrasings, so plain
+  "Remote — US" no longer leaks into `remote` (spec §7, LLD §4.1).
 - **Seniority inference:** keyword/regex heuristics → {junior, mid, senior, staff,
   unknown}. Errs toward `unknown` (kept, ranked low) rather than wrong exclusion.
 - **Date parsing:** normalize each source's date field to UTC `posted_at`; unparseable
@@ -179,12 +190,18 @@ are kept and sorted low rather than dropped.
   /api/jobs/{id}`, `POST /api/jobs/{id}/status`, `POST /api/poll` (shells the pipeline).
 - **Frontend:** a single static page (vanilla JS or a tiny build-free framework) served
   by FastAPI. No SPA build toolchain — keeps footprint and maintenance low.
-- **Views:** ranked cards (score, title, company, location badge, prominent "Xd ago"
-  age badge, matched skills, "new since last poll"); filters (location, source,
-  seniority, min score, status, age ≤7/14/21d); sort toggle best-match | newest-first;
-  detail view with full description + score breakdown + apply link; per-job status.
+- **Views:** **two tabs — All / Applied** (All excludes `applied`+`dismissed`; Applied
+  shows only `applied`, newest-applied first); ranked cards (score, title, company,
+  location badge, prominent "Xd ago" age badge, matched skills, "new since last poll");
+  filters (location, source, seniority, min score, status, age ≤7/14/21d); sort toggle
+  best-match | newest-first; detail view with full description + score breakdown + apply
+  link; per-job status. Marking `applied` removes the card from **All** and triggers the
+  server-side Sheets sync (§3.7).
+- **Styling:** a refreshed, denser, more polished card/tab treatment kept deliberately
+  lightweight — still the single static page + vanilla JS + plain CSS (no framework, no
+  build step), so the footprint claim below is unchanged.
 - Binds to `127.0.0.1` only; no auth (local trust boundary); browser talks only to the
-  local backend (no third-party calls from the page).
+  local backend (no third-party calls from the page — the Sheets write is server-side).
 
 **Decision & rationale (web stack).** FastAPI + a static page over (a) a heavier
 SPA (React/Vite) — unnecessary build tooling and dependency weight for a handful of
@@ -198,8 +215,36 @@ here (filter/sort/status) is light enough for vanilla JS, honoring "minimize foo
   self-documenting `--help`, minimal boilerplate.
 - **Config:** `profile.yaml` (targeting + scoring weights), `companies.yaml` (ATS board
   tokens, grows via auto-discovery), `resume.{pdf,docx,txt,md}` (gitignored), `.env`
-  (Adzuna key, optional). Loaded/validated via `pydantic-settings` so a malformed
-  config fails fast with a clear message rather than mid-poll.
+  (Adzuna key + Google Sheets credentials/sheet id, all optional). Loaded/validated via
+  `pydantic-settings` so a malformed config fails fast with a clear message rather than
+  mid-poll.
+
+### 3.7 Sheets sync (application tracker)
+- **Trigger:** the dashboard's `POST /api/jobs/{id}/status` with `state=applied`. The
+  status write persists first and is authoritative; the sync is a **best-effort** side
+  effect invoked after it (spec §15).
+- **What it writes:** one appended row to the user's tracking sheet
+  (`Company | Position | Response | Link`) — Company=company, Position=title, Link=url,
+  and the **Response cell left blank but shaded yellow** (the user's "applied, waiting to
+  hear back" colour convention). Done in a single Sheets `spreadsheets:batchUpdate`
+  `appendCells` request that carries both the values and the cell `backgroundColor`.
+- **Idempotency:** read the sheet's Link column first; if the posting URL is already
+  present, skip the append (re-marking / retries never duplicate).
+- **Isolation & opt-in:** wrapped like a source bulkhead — a Sheets error is logged and
+  surfaced in the response but never rolls back the status or fails the request. Active
+  only when `GOOGLE_SHEETS_CREDENTIALS` + `JOB_TRACKER_SHEET_ID` are set; absent → skipped
+  with an info note (the Adzuna-key degradation pattern, §5.1).
+
+**Decision & rationale (Sheets client).** `google-auth` (service-account JWT → OAuth2
+token) + the **existing `httpx`** client calling the Sheets **REST** API, chosen over the
+official `google-api-python-client`: the SDK is a heavy transitive dependency
+(`google-api-core`, `googleapis-common-protos`, `uritemplate`, a discovery-doc layer) for
+what is two REST calls (read the Link column; `appendCells`). `google-auth` alone handles
+the only genuinely fiddly part — signing the service-account assertion — and we already
+have `httpx` for everything else, honoring "minimize footprint." A **service account**
+over an OAuth user-consent flow because it is headless (no browser round-trip from a
+local/cron process) and the user grants access by sharing the sheet once; the key is
+gitignored and read from `.env` (HLD §5.1, spec §15).
 
 ---
 
@@ -338,6 +383,9 @@ absent Adzuna key → that source is skipped, direct ATS feeds still run (spec �
 | D9 | HTML parsing | selectolax | BeautifulSoup+lxml | Faster, smaller surface for strip-to-text |
 | D10 | CLI / config | typer + pydantic-settings/YAML | argparse + ad-hoc parsing | Typed, self-documenting, fail-fast validation |
 | D11 | Recency handling | Push down per source; central 21d gate before embedding | Filter only at the end | Avoids wasted fetch/compute; honors "don't even look at stale" |
+| D12 | Sheets sync auth | Service account JSON (`google-auth`) | OAuth user-consent flow | Headless (no browser from cron/local); share-sheet-once grant; key gitignored |
+| D13 | Sheets client | `google-auth` + existing `httpx` on the REST API | `google-api-python-client` SDK | Two REST calls don't justify the SDK's heavy transitive deps; reuse httpx |
+| D14 | Applied jobs | Hidden from default list + own tab; status authoritative, sync best-effort | Keep in list / sync transactional | Matches user workflow; a Sheets failure must never lose the local status |
 
 ---
 
@@ -353,6 +401,9 @@ absent Adzuna key → that source is skipped, direct ATS feeds still run (spec �
 | Resume parsing (messy PDFs) loses text | Weaker matches | Med | pdfplumber fallback for tricky layouts; chunk+pool full text |
 | Stale company list misses employers | Coverage gaps | Med | Aggregator-driven board-token auto-discovery appends to companies.yaml |
 | Harvest API deprecation (Aug 31 2026) | None to us | n/a | We use the public Job Board API, not Harvest; noted to avoid accidental use |
+| Sheets API error / bad creds / sheet not shared | `applied` row not written | Med | Best-effort bulkhead: status still persists, error surfaced; opt-in, skipped if unconfigured |
+| Sheets schema drift (user reorders columns) | Row written to wrong columns | Low–Med | Fixed `Company\|Position\|Response\|Link` contract documented; README notes to keep column order |
+| Remote-bucket false negatives (real Canada-remote dropped) | Good role hidden | Low–Med | Keep `other`-bucketed jobs viewable via the debug/include-ineligible toggle (§3.4) |
 
 ---
 

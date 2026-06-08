@@ -101,11 +101,35 @@ error()   { echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] ✗${NC} $1"; }
 scan_for_secrets() {
     log "Scanning staged files for secrets..."
     local found=0
-    local diff
-    diff=$(git diff --cached --unified=0 2>/dev/null || true)
+    local added
+    # Scan only ADDED CONTENT lines, not the whole diff. Stripping the leading '+'
+    # (and dropping the '+++' file header) means git's '@@ ... @@' hunk headers — which
+    # echo a nearby line as section context — are never scanned, and removing a secret
+    # (a '-' line) never trips the gate.
+    added=$(git diff --cached --unified=0 2>/dev/null \
+        | grep -E '^\+' | grep -vE '^\+\+\+' | sed -E 's/^\+//' || true)
     for pattern in "${SECRET_PATTERNS[@]}"; do
         local matches
-        matches=$(echo "$diff" | grep -iE "$pattern" || true)
+        # A key/keyword match is only a real secret when followed by an actual value.
+        # Exclude the documentation/placeholder shapes that carry none, so prose and
+        # the example env file never fail the scan (separate single-pattern filters —
+        # a combined alternation misbehaves on BSD grep):
+        #   1) empty assignment: a key with only whitespace or a comment after the
+        #      delimiter (the example-env convention).
+        #   2) angle-bracket placeholder as the value (docs/LLD prose); a real value
+        #      never looks like that shape.
+        # The AKIA.../ghp_... token patterns have no delimiter/keyword context, so these
+        # value filters don't touch them — a literal leaked token still fails the scan.
+        # NB: whitespace is matched with a literal-space bracket '[ ]', not
+        # '[[:space:]]*' — ugrep (the grep on some dev machines) mis-parses a '[...]'
+        # bracket expression placed immediately before '<[^>]+>', so the placeholder
+        # filter would silently no-op. The '[ ]' form (vs a bare space) also keeps the
+        # keyword in this very line from being literally followed by whitespace, so the
+        # scanner does not flag its own source.
+        matches=$(echo "$added" | grep -iE "$pattern" \
+            | grep -ivE '[=:][ ]*(#|$)' \
+            | grep -ivE '[=:][ ]*<[^>]+>' \
+            | grep -ivE 'bearer[ ]+<[^>]+>' || true)
         if [[ -n "$matches" ]]; then
             error "Possible secret detected (pattern: $pattern)"
             error "$matches"

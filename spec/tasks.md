@@ -331,6 +331,88 @@ Legend: **[P0]** must-have for a working product · **[P1]** completeness · **[
 
 ---
 
+## Phase 8 — M7 enhancements (post-v1)
+
+*User-requested improvements on top of the shipped v1 (spec §15, M7; HLD §3.7; LLD §16).
+Same Ralph rules: one task per iteration, fixtures-only tests, `pytest`+`ruff` gate.
+T29/T30/T33 are independent of the Sheets tasks (T31/T32), so the remote-filter, Applied
+tab and restyle land even before the Google credential is set up.*
+
+### T29 — Tighten remote/Canada location filtering  **[P0]**  `[ ] Pending`
+- **Depends on:** T10 (done)
+- **Files:** `src/jobfinder/normalize.py` (`bucket_location` + regexes), `tests/test_normalize.py`
+- **Do:** Implement the LLD §4.1 (M7) rules: a remote posting that names **any** non-Canada
+  country/region buckets `OTHER`, not just the old `us only|united states only|emea`
+  phrasings. Replace `_REMOTE_NON_CANADA_RE` with a broad word-boundary matcher
+  (`us|usa|u.s.|united states|emea|latam|apac|uk|europe|india|us-based|us only`), checked
+  **after** a positive Canada signal (Canada/North-America/Canadian-city/`bc`/`on`) so a
+  Canada cue still wins; a bare "Remote" with no country named stays `REMOTE`. Guard the
+  matcher so it can't fire on Canadian-province tokens.
+- **Done when:** "Remote — US", "Remote (United States)", "Remote, EMEA", "US-based",
+  "Remote LATAM" → `OTHER`; "Remote - Canada", "Remote (North America)", bare "Remote",
+  "Remote - Canada & US" → `REMOTE`. All existing normalize tests still pass; new cases
+  added. `ruff` clean.
+
+### T30 — Hide `applied` from default list + Applied-tab query  **[P0]**  `[ ] Pending`
+- **Depends on:** T18 (done), T06 (done)
+- **Files:** `src/jobfinder/store.py` (`_job_where`, constants), `src/jobfinder/web/schemas.py`
+  (`StatusResponse`), `tests/test_store.py`, `tests/test_api.py`
+- **Do:** Extend the default-listing hide in `store._job_where` from `!= dismissed` to
+  `NOT IN (dismissed, applied)` (add `_APPLIED_STATE` beside `_DISMISSED_STATE`, citing
+  `models.Status` — no magic strings). An explicit `status=applied` still returns them (the
+  **Applied** tab's query); `get_job_detail` keeps an applied job reachable. Add
+  `sheet_synced: bool` to `StatusResponse` (default False; T32 sets it true on a real sync).
+- **Done when:** the default `/api/jobs` total drops by one when a job is marked `applied`
+  and the job is absent from the default list but returned under `status=applied`; persists
+  across a fresh client; detail still resolves. Regression test added; existing status tests
+  unaffected.
+
+### T31 — Google Sheets sync client  **[P1]**  `[ ] Pending`
+- **Depends on:** T07 (done), T02 (done)
+- **Files:** `src/jobfinder/sheets.py`, `tests/test_sheets.py`, `tests/fixtures/sheets_*.json`
+- **Do:** Implement `sync_applied(job, *, settings, client=None, now=None) -> SyncResult`
+  per LLD §16: gate on `settings.sheets_enabled` (skip cleanly when unconfigured); mint an
+  OAuth2 token from the service-account key via `google-auth`; read the Link column for
+  idempotency; on a new URL, append a row via `spreadsheets:batchUpdate`/`appendCells`
+  writing Company/Position/Link values **and** the Response cell's **yellow**
+  `backgroundColor` in one request (`SHEETS_APPLIED_RGB` constant). Reuse the existing
+  `HttpClient`; bulkhead all network in try/except so it returns `error` rather than raising.
+- **Done when:** with no creds → `skipped`, zero requests; with faked creds + `MockTransport`
+  → builds the correct `appendCells` request (4 cells, yellow on Response) and returns
+  `appended`; a Link already present returns `duplicate` (no append); a mocked 500 returns
+  `error`, never raises. No real network. **Dep added (`uv add`):** `google-auth` (LLD §14).
+
+### T32 — Wire Sheets sync into the status endpoint + config  **[P1]**  `[ ] Pending`
+- **Depends on:** T31, T30
+- **Files:** `src/jobfinder/settings.py`, `.env.example`, `.gitignore`,
+  `src/jobfinder/web/api.py`, `tests/test_api.py`
+- **Do:** Add the M7 settings (`google_sheets_credentials`, `job_tracker_sheet_id`,
+  `job_tracker_sheet_gid`, `sheets_enabled` helper) + `.env.example` entries (LLD §11.3/4);
+  gitignore the key file. In `POST /api/jobs/{id}/status`, after the authoritative
+  `set_status`, call `sheets.sync_applied` **only when `state == applied`**, map its result
+  to `StatusResponse.sheet_synced`, and surface any `error` in logs — never 500 the request.
+- **Done when:** marking `applied` persists the status **and** invokes `sync_applied` once
+  (patched in test — no network); a patched Sheets `error` still returns 200 with
+  `sheet_synced=false`; non-`applied` states never call Sheets; unconfigured → status works,
+  `sheet_synced=false`.
+
+### T33 — Dashboard: All/Applied tabs + restyle  **[P0]**  `[ ] Pending`
+- **Depends on:** T30 (T32 optional — the `sheet_synced` note degrades gracefully)
+- **Files:** `src/jobfinder/web/static/index.html`, `app.js`, `styles.css`, `tests/test_api.py`
+- **Do:** Add a `role="tablist"` with **All** / **Applied** tabs (LLD §9.3): **All** queries
+  with no `status` (backend hides applied+dismissed), **Applied** queries `status=applied`
+  `sort=newest`. Extend `handleStatusClick` to optimistically remove a card from **All** on
+  `applied` (reusing the dismiss-remove path) and reflect `sheet_synced` in a small note.
+  Restyle `styles.css` only — tighter grid, refined type/badges/score chip, sticky tab bar,
+  subtle elevation/hover — within the existing CSS-variable palette and the
+  `:focus-visible` + text-on-every-badge a11y rules. No framework, no build step, no
+  `innerHTML`, no `console.log`.
+- **Done when:** `node --check app.js` clean; `GET /` still 200 with the new shell; the
+  Applied tab lists only applied jobs and the All tab excludes them; marking a job applied
+  removes it from All live. Manual acceptance + the T30/T32 API tests back this.
+
+---
+
 ## Completed Tasks Log
 
 | # | Date | Task | Files | Notes |
@@ -362,3 +444,8 @@ T11/T12 (sources) + T13 + T14→T15→T16 (score) → **T17 (pipeline)** →
 T18→T19→T20 (dashboard) → T24/T27/T28 (release).
 P1 tasks (T21–T23, T25, T26) extend coverage/polish but are not on the minimal
 runnable path — the product is usable after T20 + T24 + T27, and *complete* at T28.
+
+**M7 (post-v1):** T29 (remote filter) ; T30 (applied-hide + Applied tab) → T33 (tabs +
+restyle) ; T31 (sheets client) → T32 (wire into status endpoint). T29/T30/T33 are
+independent of the Sheets pair (T31→T32), so the filter + Applied-tab + UI polish ship
+even if the Google credential isn't configured yet.
