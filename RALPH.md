@@ -1,5 +1,12 @@
 # RALPH.md — Job Finder
 
+> **▶ EXECUTE NOW — this file is your instruction, not reference material.**
+> You are being invoked to run **exactly one RALPH iteration right now.** There is no
+> interactive human waiting to answer you — do **not** reply by asking for confirmation,
+> a "go", or further direction, and do not summarize what you *would* do. Begin
+> immediately with the **Start Procedure** at the end of this file and proceed
+> autonomously until the repo is buildable, tested, committed, and clean, then exit.
+
 # RALPH v2 — Autonomous Development Agent for Job Finder
 
 **RALPH (Recursive Autonomous Loop for Project Handling)** is an autonomous development
@@ -473,5 +480,8 @@ the résumé — fully local and free, with no single source able to crash a pol
 14. Exit.
 
 ---
+
+**▶ Begin the Start Procedure above NOW — run one full iteration autonomously, without
+asking for confirmation and without waiting for a "go". This invocation *is* the go.**
 
 **End of RALPH.md for Job Finder**
