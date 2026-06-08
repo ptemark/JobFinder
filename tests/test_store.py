@@ -20,12 +20,15 @@ from jobfinder.models import (
     make_job_id,
 )
 from jobfinder.store import (
+    JobFilters,
     add_company,
     connect,
+    count_jobs,
     finish_run,
     get_companies,
     init_db,
     prune,
+    query_jobs,
     save_score,
     set_status,
     start_run,
@@ -285,6 +288,39 @@ def test_set_status_upserts_state() -> None:
         assert len(rows) == 1
         assert rows[0]["state"] == "dismissed"
         assert rows[0]["updated_at"] == t1.isoformat()
+    finally:
+        conn.close()
+
+
+def test_default_listing_hides_dismissed_and_applied_but_explicit_filter_returns_them() -> None:
+    """M7/T30: the default list (no status filter) excludes both dismissed and applied
+    jobs; an explicit status=applied still surfaces them (the Applied-tab query)."""
+    now = datetime(2026, 6, 4, tzinfo=UTC)
+    conn = connect(":memory:")
+    try:
+        init_db(conn)
+        kept = _make_job(
+            id=make_job_id("greenhouse", "kept"), source_id="kept", first_seen=now, last_seen=now
+        )
+        applied = _make_job(
+            id=make_job_id("greenhouse", "ap"), source_id="ap", first_seen=now, last_seen=now
+        )
+        dismissed = _make_job(
+            id=make_job_id("greenhouse", "di"), source_id="di", first_seen=now, last_seen=now
+        )
+        for job in (kept, applied, dismissed):
+            upsert_job(conn, job)
+        set_status(conn, applied.id, Status.APPLIED, now=now)
+        set_status(conn, dismissed.id, Status.DISMISSED, now=now)
+
+        # Default listing: only the untouched job survives.
+        default_ids = {r["id"] for r in query_jobs(conn, now=now)}
+        assert default_ids == {kept.id}
+        assert count_jobs(conn, now=now) == 1
+
+        # Applied tab: explicit status=applied returns the applied job.
+        only_applied = query_jobs(conn, filters=JobFilters(status="applied"), now=now)
+        assert [r["id"] for r in only_applied] == [applied.id]
     finally:
         conn.close()
 

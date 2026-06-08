@@ -394,11 +394,14 @@ _JOB_COLUMNS = (
 )
 
 # Status states used in the WHERE clause. An untouched job has no status row and
-# reads as 'new' (LLD §9.2); a dismissed job is excluded from the default listing
-# (spec §7: an eligible posting is "not already marked dismissed" — §13 DoD:
-# dismissing "hides it and persists across restart"). Mirror models.Status values.
+# reads as 'new' (LLD §9.2); a dismissed or applied job is excluded from the default
+# listing (spec §7: an eligible posting is "not already marked dismissed or applied" —
+# §13 DoD: dismissing "hides it and persists across restart"; M7/T30 hides applied too,
+# surfacing it under the Applied tab via an explicit status=applied query). Mirror
+# models.Status values.
 _DEFAULT_STATE = "new"  # models.Status.NEW — implicit status of an untouched job
 _DISMISSED_STATE = "dismissed"  # models.Status.DISMISSED — hidden unless asked for
+_APPLIED_STATE = "applied"  # models.Status.APPLIED — hidden from default list (M7/T30)
 
 # Sort orders (LLD §9.2). NULLS LAST keeps unscored / undated jobs at the bottom
 # rather than the top (SQLite ≥ 3.30 honours the clause).
@@ -454,10 +457,14 @@ def _job_where(filters: JobFilters, now: datetime) -> tuple[str, dict[str, objec
         params["status"] = filters.status
         params["default_state"] = _DEFAULT_STATE
     else:
-        # No explicit status filter: hide dismissed jobs by default (spec §7, §13).
-        clauses.append("COALESCE(st.state, :default_state) != :dismissed_state")
+        # No explicit status filter: hide dismissed *and* applied jobs by default
+        # (spec §7, §13; M7/T30 — applied jobs live under their own Applied tab).
+        clauses.append(
+            "COALESCE(st.state, :default_state) NOT IN (:dismissed_state, :applied_state)"
+        )
         params["default_state"] = _DEFAULT_STATE
         params["dismissed_state"] = _DISMISSED_STATE
+        params["applied_state"] = _APPLIED_STATE
     if filters.min_score is not None:
         clauses.append("s.final >= :min_score")
         params["min_score"] = filters.min_score

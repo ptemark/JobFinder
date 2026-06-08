@@ -57,9 +57,17 @@ class StatusUpdate(BaseModel):
 
 
 class StatusResponse(BaseModel):
-    """Acknowledgement for a successful status write."""
+    """Acknowledgement for a successful status write.
+
+    ``sheet_synced`` reports whether the optional Google Sheet application-tracker
+    sync ran on an ``applied`` write (LLD §9.1/§16). It is ``False`` for non-applied
+    states, when the sync is unconfigured, or on a handled Sheets error; T32 sets it
+    ``True`` on a successful append. The status write itself is authoritative and
+    always persists regardless of this flag.
+    """
 
     ok: bool
+    sheet_synced: bool = False
 
 
 class RunSummaryResponse(BaseModel):

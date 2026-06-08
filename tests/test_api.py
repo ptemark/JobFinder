@@ -287,7 +287,9 @@ def test_status_post_persists_across_fresh_client(client: TestClient, tmp_path: 
     job_id = make_job_id("greenhouse", "a")
     resp = client.post(f"/api/jobs/{job_id}/status", json={"state": "dismissed"})
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True}
+    # sheet_synced is False for non-applied states / when the sync is unconfigured
+    # (T30 schema field; T32 sets it True on a real Sheets append).
+    assert resp.json() == {"ok": True, "sheet_synced": False}
 
     # A brand-new app/client over the same DB sees the persisted status.
     fresh = TestClient(create_app(Settings(base_dir=tmp_path), now=lambda: _NOW))
@@ -324,6 +326,33 @@ def test_dismissed_hidden_from_default_listing(client: TestClient) -> None:
     # Still retrievable when explicitly asked for.
     only = client.get("/api/jobs", params={"status": "dismissed"}).json()["items"]
     assert [i["id"] for i in only] == [job_id]
+
+
+def test_applied_hidden_from_default_listing_and_shown_under_applied_tab(
+    client: TestClient, tmp_path: Path
+) -> None:
+    # M7/T30: marking a job `applied` hides it from the default list (like dismissed)
+    # but surfaces it under the Applied tab's explicit status=applied query.
+    job_id = make_job_id("greenhouse", "a")
+    before = {i["id"] for i in client.get("/api/jobs").json()["items"]}
+    assert job_id in before
+
+    resp = client.post(f"/api/jobs/{job_id}/status", json={"state": "applied"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "sheet_synced": False}
+
+    after = client.get("/api/jobs").json()
+    assert job_id not in {i["id"] for i in after["items"]}
+    assert after["total"] == len(before) - 1
+
+    # The Applied tab's query (status=applied, newest first) returns it.
+    applied = client.get("/api/jobs", params={"status": "applied", "sort": "newest"})
+    assert [i["id"] for i in applied.json()["items"]] == [job_id]
+
+    # Detail stays reachable, and the hide persists across a fresh client.
+    fresh = TestClient(create_app(Settings(base_dir=tmp_path), now=lambda: _NOW))
+    assert fresh.get(f"/api/jobs/{job_id}").json()["status"] == "applied"
+    assert job_id not in {i["id"] for i in fresh.get("/api/jobs").json()["items"]}
 
 
 def test_status_invalid_state_422(client: TestClient) -> None:
