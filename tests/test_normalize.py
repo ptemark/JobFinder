@@ -122,6 +122,20 @@ def test_parse_date_bool_is_not_a_timestamp() -> None:
         ("Ottawa, Canada", LocationBucket.OTHER_CANADA, False),
         ("New York, NY", LocationBucket.OTHER, False),
         ("", LocationBucket.OTHER, False),
+        # M7 (T29): broad non-Canada matcher buckets any named foreign region OTHER.
+        ("Remote — US", LocationBucket.OTHER, True),
+        ("Remote (United States)", LocationBucket.OTHER, True),
+        ("Remote, EMEA", LocationBucket.OTHER, True),
+        ("US-based — Remote", LocationBucket.OTHER, True),
+        ("Remote LATAM", LocationBucket.OTHER, True),
+        ("Remote, APAC", LocationBucket.OTHER, True),
+        ("Remote (UK)", LocationBucket.OTHER, True),
+        ("Remote - India", LocationBucket.OTHER, True),
+        # M7 (T29): a positive Canada cue or no country named stays REMOTE.
+        ("Remote - Canada", LocationBucket.REMOTE, True),
+        ("Remote (North America)", LocationBucket.REMOTE, True),
+        # A non-remote US location is still out of scope (final OTHER fallthrough).
+        ("US-based", LocationBucket.OTHER, False),
     ],
 )
 def test_bucket_location_branches(
@@ -142,6 +156,15 @@ def test_bucket_location_source_remote_flag_overrides_text() -> None:
 def test_bucket_location_remote_wins_over_city() -> None:
     # Ordered rules: a remote signal takes priority over a named city.
     assert bucket_location("Remote, Vancouver", is_remote=False) == (
+        LocationBucket.REMOTE,
+        True,
+    )
+
+
+def test_bucket_location_canada_signal_wins_over_stray_non_canada_token() -> None:
+    # M7 (T29) §4.1.1a: when a Canada cue and a non-Canada token co-occur, the
+    # Canada signal wins — "Remote - Canada & US" stays REMOTE, not OTHER.
+    assert bucket_location("Remote - Canada & US", is_remote=False) == (
         LocationBucket.REMOTE,
         True,
     )

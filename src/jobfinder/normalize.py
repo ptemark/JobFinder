@@ -106,8 +106,6 @@ def _parse_iso(value: str | int | float) -> datetime | None:
 # Any remote signal in free-text location. ``is_remote`` from the source (e.g.
 # Ashby's ``workplaceType``) is OR-ed with this so either path triggers rule 1.
 _REMOTE_RE = re.compile(r"remote", re.IGNORECASE)
-# Remote roles explicitly scoped to a non-Canada region -> OTHER (LLD §4.1.1).
-_REMOTE_NON_CANADA_RE = re.compile(r"remote.*(?:us only|united states only|emea)", re.IGNORECASE)
 _VANCOUVER_RE = re.compile(r"vancouver|,\s?bc\b|british columbia", re.IGNORECASE)
 _TORONTO_RE = re.compile(r"toronto|,\s?on\b|ontario", re.IGNORECASE)
 # Other Canadian metros / explicit Canada (LLD §4.1.4).
@@ -115,6 +113,34 @@ _OTHER_CANADA_RE = re.compile(
     r"canada|montr[eé]al|calgary|ottawa|edmonton|winnipeg|qu[eé]bec|halifax|waterloo",
     re.IGNORECASE,
 )
+# Positive Canada signal inside a remote posting: "anywhere"/"north america" read
+# as Canada-eligible (LLD §4.1.1a). Canadian-city/province cues reuse the bucket
+# regexes above via :func:`_has_canada_signal`.
+_CANADA_REMOTE_SIGNAL_RE = re.compile(r"canada|north america|anywhere", re.IGNORECASE)
+# A remote posting naming *any* non-Canada country/region buckets OTHER (still
+# remote) — the M7 broadening (LLD §4.1.1b) of the old narrow "us only|emea"
+# phrasing. Word-boundary anchored so it can't fire mid-word (e.g. "uk" inside
+# "Ukraine") and never matches Canadian province codes (bc/on/…); the Canada
+# signal (1a) is checked first so a Canada cue still wins when both co-occur.
+_REMOTE_NON_CANADA_RE = re.compile(
+    r"\bu\.s\.?a?\.?|\b(?:us|usa|united states|emea|latam|apac|uk|europe|india)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_canada_signal(text: str) -> bool:
+    """True if a remote posting's location text carries a positive Canada cue.
+
+    Combines the explicit Canada/North-America/anywhere phrasing with the
+    Canadian-city/province bucket regexes (LLD §4.1.1a) so a Canada signal wins
+    over a co-occurring stray non-Canada token.
+    """
+    return bool(
+        _CANADA_REMOTE_SIGNAL_RE.search(text)
+        or _VANCOUVER_RE.search(text)
+        or _TORONTO_RE.search(text)
+        or _OTHER_CANADA_RE.search(text)
+    )
 
 
 def bucket_location(location_raw: str, is_remote: bool) -> tuple[LocationBucket, bool]:
@@ -127,11 +153,13 @@ def bucket_location(location_raw: str, is_remote: bool) -> tuple[LocationBucket,
     text = location_raw or ""
     remote_signal = is_remote or _REMOTE_RE.search(text) is not None
     if remote_signal:
-        # Remote but pinned to a non-Canada region is out of scope; still remote.
+        # 1a: a Canada cue keeps it REMOTE even if a non-Canada token co-occurs.
+        if _has_canada_signal(text):
+            return LocationBucket.REMOTE, True
+        # 1b: a named non-Canada region is out of scope; still remote.
         if _REMOTE_NON_CANADA_RE.search(text):
             return LocationBucket.OTHER, True
-        # Otherwise treat remote as Canada-eligible (explicit Canada or no
-        # country exclusion) per LLD §4.1.1.
+        # 1c: no country named at all → Canada-eligible by default.
         return LocationBucket.REMOTE, True
     if _VANCOUVER_RE.search(text):
         return LocationBucket.VANCOUVER, False
