@@ -453,6 +453,15 @@ def test_serves_static_spa_index(client: TestClient) -> None:
     assert "Job Finder" in resp.text
 
 
+def test_serves_static_spa_with_all_applied_tabs(client: TestClient) -> None:
+    # T33: the dashboard shell carries the All/Applied tablist (LLD §9.3).
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert 'role="tablist"' in resp.text
+    assert 'data-tab="all"' in resp.text
+    assert 'data-tab="applied"' in resp.text
+
+
 def test_serves_static_assets(client: TestClient) -> None:
     js = client.get("/app.js")
     assert js.status_code == 200

@@ -91,6 +91,30 @@
       </aside>
 
       <section class="results" aria-label="Job results" aria-busy="false">
+        <div id="tabs" class="tabs" role="tablist" aria-label="Job views">
+          <button
+            id="tab-all"
+            type="button"
+            class="tab"
+            role="tab"
+            data-tab="all"
+            aria-selected="true"
+          >
+            All
+          </button>
+          <button
+            id="tab-applied"
+            type="button"
+            class="tab"
+            role="tab"
+            data-tab="applied"
+            aria-selected="false"
+          >
+            Applied
+          </button>
+        </div>
+        <!-- Non-error confirmation (e.g. Sheets sync result on "applied"); never an error. -->
+        <p id="status-note" class="status-note" role="status" aria-live="polite" hidden></p>
         <p id="results-summary" class="results__summary" aria-live="polite"></p>
         <ul id="job-list" class="job-list"></ul>
       </section>

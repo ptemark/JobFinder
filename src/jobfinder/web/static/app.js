@@ -21,6 +21,12 @@ const STATUS_ACTIONS = [
   { state: "dismissed", label: "Dismissed" },
 ];
 
+// The two top-level views (LLD §9.3). "all" reads the filter form (the backend
+// hides applied+dismissed by default); "applied" forces status=applied&sort=newest.
+const TAB_ALL = "all";
+const TAB_APPLIED = "applied";
+let currentTab = TAB_ALL;
+
 const els = {
   alert: document.getElementById("alert"),
   filters: document.getElementById("filters"),
@@ -29,6 +35,8 @@ const els = {
   results: document.querySelector(".results"),
   pollNow: document.getElementById("poll-now"),
   runStatus: document.getElementById("run-status"),
+  tabs: document.getElementById("tabs"),
+  statusNote: document.getElementById("status-note"),
 };
 
 function showError(message) {
@@ -41,11 +49,31 @@ function clearError() {
   els.alert.hidden = true;
 }
 
-// Read the filter form into an /api/jobs query string, dropping blank fields so
-// the backend applies its own defaults.
+// A non-error confirmation (e.g. the Sheets sync result on "applied"). Distinct
+// from showError — this is a status, never a failure.
+function showStatusNote(message) {
+  els.statusNote.textContent = message;
+  els.statusNote.hidden = false;
+}
+
+function clearStatusNote() {
+  els.statusNote.textContent = "";
+  els.statusNote.hidden = true;
+}
+
+// Build the /api/jobs query string for the active tab (LLD §9.3). The Applied tab
+// always asks for applied jobs, newest-first, ignoring the sidebar filters; the All
+// tab reads the filter form (blank fields dropped so the backend's defaults apply —
+// which already hide applied+dismissed).
 function buildQuery() {
-  const data = new FormData(els.filters);
   const params = new URLSearchParams();
+  if (currentTab === TAB_APPLIED) {
+    params.set("status", TAB_APPLIED);
+    params.set("sort", "newest");
+    params.set("include_ineligible", "false");
+    return params.toString();
+  }
+  const data = new FormData(els.filters);
   for (const [key, value] of data.entries()) {
     if (key === "include_ineligible") {
       continue; // handled explicitly below (unchecked boxes are absent here)
@@ -213,6 +241,37 @@ function handleFilterSubmit(event) {
   loadJobs();
 }
 
+function handleTabClick(event) {
+  const button = event.target.closest("button[data-tab]");
+  if (button === null) {
+    return;
+  }
+  const tab = button.dataset.tab;
+  if (tab === currentTab) {
+    return;
+  }
+  currentTab = tab;
+  for (const sibling of els.tabs.querySelectorAll("button[data-tab]")) {
+    sibling.setAttribute("aria-selected", String(sibling.dataset.tab === tab));
+  }
+  clearStatusNote();
+  loadJobs();
+}
+
+// Whether a card should remain visible after its status changed to `state`, given
+// the active view: the Applied tab shows only applied jobs; the All tab honours an
+// explicit status filter, else hides applied+dismissed (matching the backend).
+function isCardVisibleAfterStatus(state) {
+  if (currentTab === TAB_APPLIED) {
+    return state === TAB_APPLIED;
+  }
+  const statusFilter = els.filters.elements.status.value;
+  if (statusFilter !== "") {
+    return state === statusFilter;
+  }
+  return state !== "applied" && state !== "dismissed";
+}
+
 async function handleStatusClick(event) {
   const button = event.target.closest("button[data-state]");
   if (button === null) {
@@ -221,20 +280,30 @@ async function handleStatusClick(event) {
   const { jobId, state } = button.dataset;
   const card = els.jobList.querySelector(`.job-card[data-job-id="${CSS.escape(jobId)}"]`);
   try {
-    await fetchJson(API.status(jobId), {
+    const result = await fetchJson(API.status(jobId), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ state }),
     });
     clearError();
-    // Optimistically reflect the new state: toggle pressed buttons, and hide a
-    // dismissed card unless the dismissed filter is active.
+    // Marking applied reports the optional Sheets sync outcome (LLD §9.3/§16).
+    if (state === "applied") {
+      showStatusNote(
+        result.sheet_synced
+          ? "Marked applied · added to tracking sheet."
+          : "Marked applied · tracking sheet not configured.",
+      );
+    } else {
+      clearStatusNote();
+    }
+    // Optimistically reflect the new state: toggle pressed buttons, and drop the
+    // card when its new state is no longer visible in the active view.
     if (card !== null) {
       card.dataset.status = state;
       for (const sibling of card.querySelectorAll("button[data-state]")) {
         sibling.setAttribute("aria-pressed", String(sibling.dataset.state === state));
       }
-      if (state === "dismissed" && els.filters.elements.status.value !== "dismissed") {
+      if (!isCardVisibleAfterStatus(state)) {
         card.remove();
       }
     }
@@ -260,6 +329,7 @@ async function handlePollNow() {
 els.filters.addEventListener("submit", handleFilterSubmit);
 els.jobList.addEventListener("click", handleStatusClick);
 els.pollNow.addEventListener("click", handlePollNow);
+els.tabs.addEventListener("click", handleTabClick);
 
 loadRunStatus();
 loadJobs();
