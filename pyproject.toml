@@ -12,6 +12,7 @@ authors = [{ name = "Peter Mark" }]
 # `jobfinder` entry point imports and `--help` works.
 dependencies = [
     "fastapi>=0.110,<1.0",
+    "google-auth>=2.29,<3.0",
     "httpx[http2]>=0.27,<1.0",
     "numpy>=1.26,<3.0",
     "pdfplumber>=0.11,<1.0",

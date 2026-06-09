@@ -118,6 +118,26 @@ class HttpClient:
         """GET ``url`` and return the raw body text (used for XML feeds)."""
         return self._get_text(url, params=params, headers=headers, ttl_s=ttl_s)
 
+    def post_json(
+        self,
+        url: str,
+        *,
+        json_body: Any,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        """POST ``json_body`` to ``url`` and parse the response body as JSON.
+
+        Used by the Google Sheets sync (LLD §16) for ``spreadsheets:batchUpdate``.
+        POSTs are never cached (a write has no idempotent GET semantics) but still
+        flow through the per-host throttle and the bounded transient-error retry,
+        so the one shared client governs every outbound call (Cost & Safety §3.1).
+        """
+        full_url = httpx.URL(url)
+        body = self._request_with_retry(
+            full_url, headers=headers, method="POST", json_body=json_body
+        )
+        return json.loads(body) if body else {}
+
     def close(self) -> None:
         """Close the underlying connection pool."""
         self._client.close()
@@ -155,12 +175,22 @@ class HttpClient:
             self._write_cache(cache_path, body)
         return body
 
-    def _request_with_retry(self, url: httpx.URL, *, headers: dict[str, str] | None = None) -> str:
+    def _request_with_retry(
+        self,
+        url: httpx.URL,
+        *,
+        headers: dict[str, str] | None = None,
+        method: str = "GET",
+        json_body: Any = None,
+    ) -> str:
         last_timeout: httpx.TimeoutException | None = None
         for attempt in range(MAX_ATTEMPTS):
             self._throttle(url.host)
             try:
-                resp = self._client.get(url, headers=headers)
+                if method == "POST":
+                    resp = self._client.post(url, headers=headers, json=json_body)
+                else:
+                    resp = self._client.get(url, headers=headers)
             except httpx.TimeoutException as exc:
                 last_timeout = exc
                 self._backoff(attempt)

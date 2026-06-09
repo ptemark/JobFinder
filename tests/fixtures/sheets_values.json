@@ -1,0 +1,8 @@
+{
+  "range": "Applications!D1:D2",
+  "majorDimension": "ROWS",
+  "values": [
+    ["Link"],
+    ["https://jobs.example.com/existing"]
+  ]
+}
