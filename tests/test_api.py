@@ -364,6 +364,76 @@ def test_status_unknown_job_404(client: TestClient) -> None:
     assert client.post("/api/jobs/deadbeef/status", json={"state": "applied"}).status_code == 404
 
 
+# --- Applied → Google Sheets sync wiring (T32) ------------------------------
+
+
+def test_status_applied_invokes_sheets_sync_once(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Marking `applied` calls sheets.sync_applied exactly once with the job's
+    # company/title/url, and a successful append surfaces as sheet_synced=True.
+    # No network: the sync is patched (LLD §16 testing rule).
+    from jobfinder.sheets import SyncResult
+
+    calls: list[object] = []
+
+    def fake_sync(job: object, *, settings: Settings) -> SyncResult:
+        calls.append(job)
+        return SyncResult("appended", "ok")
+
+    monkeypatch.setattr("jobfinder.web.api.sync_applied", fake_sync)
+    job_id = make_job_id("greenhouse", "a")
+
+    resp = client.post(f"/api/jobs/{job_id}/status", json={"state": "applied"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "sheet_synced": True}
+
+    assert len(calls) == 1
+    synced = calls[0]
+    assert synced.company == "Acme"
+    assert synced.title == "Senior Backend Engineer"
+    assert synced.url == "https://example.test/a"
+
+
+def test_status_applied_sheets_error_still_returns_200(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A handled Sheets error never 500s: the status write stands and the response
+    # is 200 with sheet_synced=False (best-effort side effect, LLD §9.1/§16).
+    from jobfinder.sheets import SyncResult
+
+    monkeypatch.setattr(
+        "jobfinder.web.api.sync_applied",
+        lambda job, *, settings: SyncResult("error", "boom"),
+    )
+    job_id = make_job_id("greenhouse", "a")
+
+    resp = client.post(f"/api/jobs/{job_id}/status", json={"state": "applied"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "sheet_synced": False}
+    # The authoritative status write persisted despite the Sheets failure.
+    assert client.get(f"/api/jobs/{job_id}").json()["status"] == "applied"
+
+
+def test_status_non_applied_never_calls_sheets(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Only `applied` triggers the sync; every other state leaves Sheets untouched
+    # and reports sheet_synced=False.
+    calls: list[object] = []
+    monkeypatch.setattr(
+        "jobfinder.web.api.sync_applied",
+        lambda job, *, settings: calls.append(job),
+    )
+    job_id = make_job_id("greenhouse", "a")
+
+    for state in ("dismissed", "interested", "new"):
+        resp = client.post(f"/api/jobs/{job_id}/status", json={"state": state})
+        assert resp.status_code == 200
+        assert resp.json()["sheet_synced"] is False
+    assert calls == []
+
+
 # --- Runs -------------------------------------------------------------------
 
 

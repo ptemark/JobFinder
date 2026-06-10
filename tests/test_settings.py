@@ -118,3 +118,38 @@ def test_adzuna_enabled_only_with_both_keys(tmp_path: Path) -> None:
 def test_settings_rejects_invalid_tunable(tmp_path: Path) -> None:
     with pytest.raises(ValidationError):
         Settings(base_dir=tmp_path, throttle_s=0, _env_file=None)
+
+
+# --- Optional M7 Google Sheets sync settings (T32) --------------------------
+
+
+def test_sheets_disabled_when_unconfigured(tmp_path: Path) -> None:
+    settings = Settings(base_dir=tmp_path, _env_file=None)
+    assert settings.google_sheets_credentials is None
+    assert settings.job_tracker_sheet_id is None
+    assert settings.sheets_enabled is False
+
+
+def test_sheets_enabled_only_with_both_credentials_and_sheet_id(tmp_path: Path) -> None:
+    both = Settings(
+        base_dir=tmp_path,
+        google_sheets_credentials="config/key.json",
+        job_tracker_sheet_id="sheet123",
+        _env_file=None,
+    )
+    assert both.sheets_enabled is True
+    # Only the key, no sheet id → still disabled (the Adzuna both-keys gate).
+    partial = Settings(
+        base_dir=tmp_path, google_sheets_credentials="config/key.json", _env_file=None
+    )
+    assert partial.sheets_enabled is False
+
+
+def test_sheets_gid_blank_env_falls_back_to_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A copied-but-blank `JOB_TRACKER_SHEET_GID=` must parse as unset (None), not
+    # fail "" → int validation (env_ignore_empty, LLD §11.3).
+    monkeypatch.setenv("JOB_TRACKER_SHEET_GID", "")
+    settings = Settings(base_dir=tmp_path, _env_file=None)
+    assert settings.job_tracker_sheet_gid is None

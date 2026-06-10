@@ -12,9 +12,11 @@ the pipeline out-of-process (LLD §9.1) so a slow source never blocks the reques
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
@@ -22,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from jobfinder.models import Status
 from jobfinder.score import matched_skills
+from jobfinder.sheets import sync_applied
 from jobfinder.store import (
     JobFilters,
     connect,
@@ -49,7 +52,26 @@ if TYPE_CHECKING:
 
     from jobfinder.settings import Settings
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api")
+
+
+@dataclass(frozen=True)
+class _AppliedJob:
+    """Adapts a stored jobs row to the :class:`~jobfinder.sheets.AppliedJob` shape.
+
+    The Sheets sync reads ``.company``/``.title``/``.url`` as attributes, but the
+    store returns a ``sqlite3.Row`` (subscript access); this bridges the two.
+    """
+
+    company: str
+    title: str
+    url: str
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> _AppliedJob:
+        return cls(company=row["company"] or "", title=row["title"], url=row["url"] or "")
 
 
 def get_conn(request: Request) -> Iterator[sqlite3.Connection]:
@@ -216,11 +238,36 @@ def update_status(
     request: Request,
     conn: sqlite3.Connection = Depends(get_conn),
 ) -> StatusResponse:
-    """Persist a job's status (LLD §9.1). 404 if the job is unknown."""
-    if get_job_detail(conn, job_id) is None:
+    """Persist a job's status (LLD §9.1). 404 if the job is unknown.
+
+    On an ``applied`` write the optional Google Sheet tracker sync runs as a
+    best-effort side effect (LLD §16/§9.1): the ``set_status`` above is
+    authoritative and always persists; the sync no-ops when unconfigured, and any
+    Sheets failure is logged and reported via ``sheet_synced`` — it never 500s the
+    request. Only ``applied`` triggers it; other states never call Sheets.
+    """
+    row = get_job_detail(conn, job_id)
+    if row is None:
         raise HTTPException(status_code=404, detail="job not found")
     set_status(conn, job_id, payload.state, now=request.app.state.clock())
-    return StatusResponse(ok=True)
+    sheet_synced = _sync_applied_best_effort(request.app.state.settings, payload.state, row)
+    return StatusResponse(ok=True, sheet_synced=sheet_synced)
+
+
+def _sync_applied_best_effort(settings: Settings, state: Status, row: sqlite3.Row) -> bool:
+    """Append an ``applied`` job to the user's tracking sheet; return whether it synced.
+
+    Returns ``StatusResponse.sheet_synced``: ``True`` only on a fresh append, and
+    ``False`` for non-``applied`` states, an unconfigured/duplicate sync, or a handled
+    Sheets error (which is logged here). :func:`sync_applied` already bulkheads its
+    network, so this never raises into the request.
+    """
+    if state != Status.APPLIED:
+        return False
+    result = sync_applied(_AppliedJob.from_row(row), settings=settings)
+    if result.status == "error":
+        logger.warning("Sheets sync error for job %s: %s", row["id"], result.detail)
+    return result.status == "appended"
 
 
 @router.post("/poll", status_code=202, response_model=PollResponse)

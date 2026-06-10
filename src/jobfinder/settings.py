@@ -47,6 +47,10 @@ class Settings(BaseSettings):
         # secrets carry an unprefixed alias (ADZUNA_APP_ID/KEY from .env) but
         # should also be settable directly as adzuna_app_id/adzuna_app_key.
         populate_by_name=True,
+        # Treat an empty env value (e.g. a copied-but-blank `JOB_TRACKER_SHEET_GID=`
+        # in `.env`) as unset, falling back to the default — so the optional
+        # integer gid parses cleanly instead of failing "" → int validation.
+        env_ignore_empty=True,
     )
 
     # Filesystem root for config/ and data/. Defaults to the current working
@@ -95,6 +99,20 @@ class Settings(BaseSettings):
     def jsearch_enabled(self) -> bool:
         """True only when the JSearch RapidAPI key is present."""
         return bool(self.jsearch_api_key)
+
+    # Optional M7 Google Sheet application-tracker sync (spec §15, LLD §11.4; .env
+    # only). The service-account key file is gitignored. Both the key path AND the
+    # sheet id must be present for the sync to enable — absent → marking "applied"
+    # still works locally and the sync skips cleanly (the Adzuna-key pattern).
+    google_sheets_credentials: Path | None = Field(default=None, alias="GOOGLE_SHEETS_CREDENTIALS")
+    job_tracker_sheet_id: str | None = Field(default=None, alias="JOB_TRACKER_SHEET_ID")
+    # Optional worksheet gid; None defaults to the spreadsheet's first sheet (LLD §16.1).
+    job_tracker_sheet_gid: int | None = Field(default=None, alias="JOB_TRACKER_SHEET_GID")
+
+    @property
+    def sheets_enabled(self) -> bool:
+        """True only when both the service-account key path and sheet id are set."""
+        return bool(self.google_sheets_credentials) and bool(self.job_tracker_sheet_id)
 
     @property
     def config_dir(self) -> Path:

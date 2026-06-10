@@ -49,6 +49,8 @@ logs/
 # Secrets and personal data (never committed — Cost & Safety §4)
 .env
 config/resume.*
+# M7 Google Sheets service-account key (never committed — LLD §11.3)
+config/google-service-account.json
 # Personal résumé kept at repo root (belongs in config/resume.* per spec)
 /Peter_Mark_Resume.*
 # Local, user-specific generated config (examples are committed)
